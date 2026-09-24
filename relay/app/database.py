@@ -14,7 +14,14 @@ class Base(DeclarativeBase):
 class Database:
     def __init__(self, database_url: str) -> None:
         connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-        self.engine = create_engine(database_url, future=True, connect_args=connect_args)
+        self.engine = create_engine(
+            database_url,
+            future=True,
+            connect_args=connect_args,
+            # patch local: sem isto, conexões velhas do pool após restart do Postgres
+            # devolvem 500 (AdminShutdown) até o relay ser reiniciado
+            pool_pre_ping=True,
+        )
         self.session_factory = sessionmaker(
             bind=self.engine,
             autoflush=False,

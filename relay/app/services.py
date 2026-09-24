@@ -7,6 +7,7 @@ from urllib.parse import urlparse, urlunparse
 
 from fastapi import HTTPException, status
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import Settings
@@ -188,17 +189,28 @@ def upsert_device(
             last_seen_at=utcnow(),
         )
         db.add(device)
-    else:
-        device.user_id = user.id
-        device.platform = platform
-        device.device_name = device_name
-        device.device_model = device_model
-        device.system_version = system_version
-        device.app_version = app_version
-        device.build_number = build_number
-        device.bundle_id = bundle_id
-        device.environment = environment
-        device.last_seen_at = utcnow()
+        try:
+            # `installation_id` é único e o app pode disparar register + redeem em
+            # paralelo: o INSERT perdedor derrubava a requisição com 500
+            # (duplicate key em devices_installation_id_key). O savepoint isola a
+            # falha; a linha criada pela outra requisição é reaproveitada abaixo.
+            with db.begin_nested():
+                db.flush()
+        except IntegrityError:
+            device = db.scalar(select(Device).where(Device.installation_id == installation_id))
+            if device is None:
+                raise
+
+    device.user_id = user.id
+    device.platform = platform
+    device.device_name = device_name
+    device.device_model = device_model
+    device.system_version = system_version
+    device.app_version = app_version
+    device.build_number = build_number
+    device.bundle_id = bundle_id
+    device.environment = environment
+    device.last_seen_at = utcnow()
 
     db.commit()
     db.refresh(device)
