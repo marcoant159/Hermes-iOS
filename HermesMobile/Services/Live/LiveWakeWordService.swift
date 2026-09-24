@@ -65,6 +65,8 @@ final class LiveWakeWordService {
 
     /// Silence after the last recognized word that closes the command.
     private static let silenceToFinishCommand: TimeInterval = 1.6
+    /// How long to wait for a command to *start* after the wake phrase.
+    private static let silenceBeforeCommand: TimeInterval = 5
     /// Hard cap for a single spoken command.
     private static let maxCommandSeconds: TimeInterval = 20
     /// Grace period after the reply before the mic goes live again.
@@ -291,7 +293,11 @@ final class LiveWakeWordService {
         guard isRunning, capturing else { return }
         let idle = Date().timeIntervalSince(lastTextAt)
         let elapsed = Date().timeIntervalSince(captureStartedAt)
-        if idle >= Self.silenceToFinishCommand || elapsed >= Self.maxCommandSeconds {
+        // Right after the wake phrase the user may pause ("oi hermes… <pausa> …comando"),
+        // so an empty command gets a longer grace period than one already in progress.
+        let pending = Self.join(committedCommand, currentSegmentText)
+        let idleLimit = pending.isEmpty ? Self.silenceBeforeCommand : Self.silenceToFinishCommand
+        if idle >= idleLimit || elapsed >= Self.maxCommandSeconds {
             await finalizeCommand()
         }
     }
