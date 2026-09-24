@@ -23,6 +23,7 @@ struct SettingsScreen: View {
                         environmentSection
                     }
                     preferencesSection
+                    wakeWordSection
                     locationSection
                     privacySection
                     aboutSection
@@ -250,6 +251,44 @@ struct SettingsScreen: View {
         }
     }
 
+    // MARK: - Hands-Free
+
+    private var wakeWordSection: some View {
+        SettingsSectionView(title: "Hands-Free") {
+            VStack(alignment: .leading, spacing: Design.Spacing.sm) {
+                settingsToggle(
+                    icon: "waveform.circle.fill",
+                    iconColor: .red,
+                    title: "Wake Word",
+                    isOn: wakeWordBinding
+                )
+
+                Text(wakeWordDescription)
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var wakeWordDescription: String {
+        guard settingsStore.settings.wakeWordEnabled else {
+            return "Say \u{201C}oi hermes\u{201D} (or \u{201C}hey hermes\u{201D}), speak your command, and Hermes answers out loud. Keeps the microphone active in the background while the app is running."
+        }
+        switch AppContainer.sharedDefault().wakeWordService.phase {
+        case .off:
+            return "Starting the listener…"
+        case .listening:
+            return "Listening for the wake word."
+        case .capturing:
+            return "Recording your command…"
+        case .thinking:
+            return "Waiting for Hermes…"
+        case .speaking:
+            return "Speaking the reply…"
+        }
+    }
+
     // MARK: - Location
 
     private var locationSection: some View {
@@ -381,6 +420,20 @@ struct SettingsScreen: View {
         Binding(
             get: { settingsStore.settings.hapticFeedbackEnabled },
             set: { settingsStore.settings.hapticFeedbackEnabled = $0 }
+        )
+    }
+
+    private var wakeWordBinding: Binding<Bool> {
+        Binding(
+            get: { settingsStore.settings.wakeWordEnabled },
+            set: { newValue in
+                settingsStore.settings.wakeWordEnabled = newValue
+                // Arm or release the microphone immediately.
+                Task {
+                    let container = AppContainer.sharedDefault()
+                    await container.wakeWordService.setEnabled(newValue)
+                }
+            }
         )
     }
 

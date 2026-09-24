@@ -15,6 +15,7 @@ final class AppContainer {
     let permissionsStore: PermissionsStore
     let settingsStore: SettingsStore
     let talkStore: TalkStore
+    let wakeWordService: LiveWakeWordService
     let sensorUploadService: SensorUploadService?
     private let apiClient: RelayAPIClient?
     private let notificationService: (any NotificationServiceProtocol)?
@@ -33,6 +34,7 @@ final class AppContainer {
         permissionsStore: PermissionsStore,
         settingsStore: SettingsStore,
         talkStore: TalkStore,
+        wakeWordService: LiveWakeWordService,
         sensorUploadService: SensorUploadService? = nil,
         apiClient: RelayAPIClient? = nil,
         notificationService: (any NotificationServiceProtocol)? = nil
@@ -45,6 +47,7 @@ final class AppContainer {
         self.permissionsStore = permissionsStore
         self.settingsStore = settingsStore
         self.talkStore = talkStore
+        self.wakeWordService = wakeWordService
         self.sensorUploadService = sensorUploadService
         self.apiClient = apiClient
         self.notificationService = notificationService
@@ -211,6 +214,7 @@ final class AppContainer {
             ),
             settingsStore: settingsStore,
             talkStore: TalkStore(voiceService: voiceService),
+            wakeWordService: LiveWakeWordService(),
             sensorUploadService: sensorUploadService,
             apiClient: apiClient,
             notificationService: notificationService
@@ -244,6 +248,15 @@ final class AppContainer {
         // Keep widget data fresh while app is foregrounded
         container.chatStore.onConversationChanged = { [weak container] in
             container?.updateWidgetData()
+        }
+        // Hands-free "hey hermes": spoken commands go through the normal chat pipeline
+        // and the assistant reply is spoken back by the wake word service.
+        container.wakeWordService.onCommand = { [weak container] command in
+            guard let container else { return }
+            await container.chatStore.sendMessage(command)
+        }
+        container.chatStore.onAssistantReplyFinished = { [weak container] content in
+            container?.wakeWordService.handleAssistantReply(content)
         }
         container.talkStore.onSessionStateChanged = { [weak container] in
             container?.updateWidgetData()
@@ -281,6 +294,7 @@ final class AppContainer {
         await registerStoredPushTokenIfNeeded()
         sensorUploadService?.start()
         await sensorUploadService?.handleAppDidBecomeActive()
+        await startWakeWordIfEnabled()
         reconcileLiveActivities()
         updateWidgetData()
         isInitialized = true
@@ -298,6 +312,7 @@ final class AppContainer {
         await sensorUploadService?.handleAppDidBecomeActive()
         talkStore.handleAppDidBecomeActive()
         await talkStore.refreshReadiness()
+        await startWakeWordIfEnabled()
         reconcileLiveActivities()
         await reportAppStateIfNeeded("foreground")
         updateWidgetData()
@@ -326,8 +341,19 @@ final class AppContainer {
         await sensorUploadService?.handleSystemLaunch()
         await registerStoredPushTokenIfNeeded()
         await talkStore.refreshReadiness()
+        await startWakeWordIfEnabled()
         reconcileLiveActivities()
         await reportAppStateIfNeeded("foreground")
+    }
+
+    /// Arms the hands-free wake word listener when the user enabled it.
+    private func startWakeWordIfEnabled() async {
+        guard settingsStore.settings.wakeWordEnabled else { return }
+        if wakeWordService.isEnabled {
+            await wakeWordService.handleAppBecameActive()
+        } else {
+            await wakeWordService.start()
+        }
     }
 
     private func handlePairingActivated() async {
