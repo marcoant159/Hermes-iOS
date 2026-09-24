@@ -1096,13 +1096,19 @@ class HermesMobileConnector:
                 "uses": 1,
                 "expireTime": (now + timedelta(minutes=30)).isoformat().replace("+00:00", "Z"),
                 "newSessionExpireTime": (now + timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
-                "liveConnectConstraints": {
+                "fieldMask": "model,generationConfig,systemInstruction,tools",
+                "bidiGenerateContentSetup": {
                     "model": f"models/{GEMINI_LIVE_MODEL}",
-                    "config": {
+                    "generationConfig": {
                         "responseModalities": ["AUDIO"],
-                        "systemInstruction": {"parts": [{"text": instructions}]},
-                        "tools": GEMINI_LIVE_TOOLS,
+                        "speechConfig": {
+                            "voiceConfig": {
+                                "prebuiltVoiceConfig": {"voiceName": "Aoede"},
+                            },
+                        },
                     },
+                    "systemInstruction": {"parts": [{"text": instructions}]},
+                    "tools": GEMINI_LIVE_TOOLS,
                 },
             },
             timeout=30.0,

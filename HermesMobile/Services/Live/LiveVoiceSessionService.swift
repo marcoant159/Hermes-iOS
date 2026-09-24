@@ -120,6 +120,9 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     private var geminiInputConverter: AVAudioConverter?
     private var geminiSocket: URLSessionWebSocketTask?
     private var geminiReceiveTask: Task<Void, Never>?
+    private var geminiResumeTask: Task<Void, Never>?
+    private var geminiBootstrap: TalkBootstrap?
+    private var geminiSessionResumptionHandle: String?
     private var geminiRelayMcpURL: String?
     private var geminiInputTranscript = ""
     private var geminiAssistantTranscript = ""
@@ -826,12 +829,13 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     }
     #endif
 
-    private func connectGeminiLive(_ bootstrap: TalkBootstrap) async throws {
+    private func connectGeminiLive(_ bootstrap: TalkBootstrap, resumptionHandle: String? = nil) async throws {
         guard let mcpURL = bootstrap.relayMcpURL,
               let endpoint = URL(string: "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained")
         else {
             throw RelayAPIClient.ClientError.requestFailed("Gemini Live session configuration is incomplete.")
         }
+        geminiBootstrap = bootstrap
 
         var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
         components?.queryItems = [URLQueryItem(name: "access_token", value: bootstrap.clientSecret)]
@@ -849,17 +853,20 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         let setup: [String: Any] = [
             "setup": [
                 "model": "models/\(bootstrap.model ?? "gemini-3.8-live")",
-                "responseModalities": ["AUDIO"],
+                "generationConfig": [
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": [
+                        "voiceConfig": [
+                            "prebuiltVoiceConfig": ["voiceName": bootstrap.voice ?? "Aoede"]
+                        ]
+                    ]
+                ],
                 "systemInstruction": [
                     "parts": [["text": bootstrap.systemInstruction ?? "Speak naturally in Brazilian Portuguese."]]
                 ],
-                "speechConfig": [
-                    "voiceConfig": [
-                        "prebuiltVoiceConfig": ["voiceName": bootstrap.voice ?? "Aoede"]
-                    ]
-                ],
                 "inputAudioTranscription": ["languageCodes": ["pt-BR"]],
                 "outputAudioTranscription": ["languageCodes": ["pt-BR"]],
+                "sessionResumption": resumptionHandle.map { ["handle": $0] } ?? [:],
                 "tools": [[
                     "functionDeclarations": [[
                         "name": "hermes_delegate",
@@ -892,10 +899,11 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         guard initialPayload["setupComplete"] != nil else {
             throw RelayAPIClient.ClientError.requestFailed("Gemini Live did not confirm the session setup.")
         }
+        updateGeminiSessionResumption(from: initialPayload)
 
         try startGeminiAudioCapture()
         try geminiAudioEngine.start()
-        geminiAudioPlayer.play()
+        if !geminiAudioPlayer.isPlaying { geminiAudioPlayer.play() }
         latencyMetrics.realtimeConnectedAt = .now
         connectionState = .connected
         voiceState = .listening
@@ -1008,6 +1016,11 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             }
         } catch {
             guard !isEndingSession else { return }
+            if geminiResumeTask != nil { return }
+            if geminiSessionResumptionHandle != nil {
+                scheduleGeminiResume()
+                return
+            }
             blockedReason = error.localizedDescription
             connectionState = .failed
             voiceState = .disconnected
@@ -1030,6 +1043,12 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     }
 
     private func handleGeminiMessage(_ payload: [String: Any]) async {
+        updateGeminiSessionResumption(from: payload)
+        if payload["goAway"] != nil {
+            scheduleGeminiResume()
+            return
+        }
+
         if let error = payload["error"] as? [String: Any] {
             let message = error["message"] as? String ?? "Gemini Live returned an error."
             blockedReason = message
@@ -1085,6 +1104,59 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         } else if serverContent["generationComplete"] as? Bool == true {
             voiceState = .listening
             statusMessage = "Listening with Gemini Live"
+        }
+    }
+
+    private func updateGeminiSessionResumption(from payload: [String: Any]) {
+        guard let update = payload["sessionResumptionUpdate"] as? [String: Any] else { return }
+        guard update["resumable"] as? Bool == true,
+              let handle = update["newHandle"] as? String,
+              !handle.isEmpty
+        else {
+            geminiSessionResumptionHandle = nil
+            return
+        }
+        geminiSessionResumptionHandle = handle
+    }
+
+    private func scheduleGeminiResume() {
+        guard !isEndingSession,
+              geminiResumeTask == nil,
+              let bootstrap = geminiBootstrap,
+              let handle = geminiSessionResumptionHandle
+        else {
+            if !isEndingSession, geminiSessionResumptionHandle == nil {
+                blockedReason = "Gemini Live could not resume because no resumable checkpoint was available."
+                connectionState = .failed
+                voiceState = .disconnected
+                canStartSession = false
+                statusMessage = "Gemini Live session ended."
+            }
+            return
+        }
+
+        connectionState = .connecting
+        voiceState = .thinking
+        statusMessage = "Resuming Gemini Live…"
+        geminiAudioEngine.stop()
+        geminiSocket?.cancel(with: .goingAway, reason: nil)
+        geminiSocket = nil
+
+        geminiResumeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled, !self.isEndingSession else { return }
+                try await self.connectGeminiLive(bootstrap, resumptionHandle: handle)
+            } catch {
+                guard !self.isEndingSession else { return }
+                self.blockedReason = error.localizedDescription
+                self.connectionState = .failed
+                self.voiceState = .disconnected
+                self.canStartSession = false
+                self.statusMessage = "Gemini Live could not resume."
+            }
+            self.geminiResumeTask = nil
         }
     }
 
@@ -1179,10 +1251,14 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     }
 
     private func stopGeminiTransport() {
+        geminiResumeTask?.cancel()
+        geminiResumeTask = nil
         geminiReceiveTask?.cancel()
         geminiReceiveTask = nil
         geminiSocket?.cancel(with: .goingAway, reason: nil)
         geminiSocket = nil
+        geminiBootstrap = nil
+        geminiSessionResumptionHandle = nil
         geminiRelayMcpURL = nil
         geminiInputTranscript = ""
         geminiAssistantTranscript = ""
