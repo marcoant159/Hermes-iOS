@@ -90,7 +90,9 @@ final class LiveWakeWordService {
     var isEnabled: Bool { phase != .off }
 
     /// Called with the spoken command (already stripped of the wake phrase).
-    var onCommand: (@MainActor (String) -> Void)?
+    /// Async so the caller can push it through the chat pipeline before the
+    /// service continues (the reply is spoken back later).
+    var onCommand: (@MainActor (String) async -> Void)?
 
     // MARK: - Internals
 
@@ -284,7 +286,7 @@ final class LiveWakeWordService {
         // Release the mic before the agent works (and before the reply is spoken).
         await listener.pause()
         Self.logger.info("wake command dispatched (\(command.count, privacy: .public) chars)")
-        onCommand?(command)
+        await onCommand?(command)
         armReplyTimeout()
     }
 
@@ -401,7 +403,7 @@ final class LiveWakeWordService {
 @MainActor
 final class SpeechAnnouncer {
     private let synthesizer = AVSpeechSynthesizer()
-    private static let maxSpeechSeconds = 600
+    private static let maxSpeechSeconds: TimeInterval = 600
 
     func speak(_ text: String) async {
         let spoken = Self.speechFriendly(text)
