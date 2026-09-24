@@ -1061,12 +1061,14 @@ def create_message_job(
     conversation_id: str,
     user_message_id: str,
     session_id_snapshot: str | None,
+    model_override: str | None = None,
 ) -> MessageJob:
     job = MessageJob(
         user_id=user_id,
         conversation_id=conversation_id,
         user_message_id=user_message_id,
         session_id_snapshot=session_id_snapshot,
+        model_override=model_override,
         status="queued",
         retryable=True,
     )

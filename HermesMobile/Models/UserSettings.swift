@@ -235,6 +235,7 @@ struct UserSettings: Codable, Hashable, Sendable {
     var locationSyncPreference: LocationSyncPreference
     /// Hands-free "hey hermes" wake word listener (opt-in; needs mic in background).
     var wakeWordEnabled: Bool
+    var chatModelChoice: ChatModelChoice
 
     init(
         userName: String = "User",
@@ -245,7 +246,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         relayConfiguration: RelayConfiguration = RelayConfiguration.defaultValue(),
         autoConnectOnLaunch: Bool = true,
         locationSyncPreference: LocationSyncPreference = .foregroundOnly,
-        wakeWordEnabled: Bool = false
+        wakeWordEnabled: Bool = false,
+        chatModelChoice: ChatModelChoice = .hermesDefault
     ) {
         self.userName = userName
         self.avatarInitials = avatarInitials
@@ -256,6 +258,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.autoConnectOnLaunch = autoConnectOnLaunch
         self.locationSyncPreference = locationSyncPreference
         self.wakeWordEnabled = wakeWordEnabled
+        self.chatModelChoice = chatModelChoice
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -268,6 +271,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         case autoConnectOnLaunch
         case locationSyncPreference
         case wakeWordEnabled
+        case chatModelChoice
     }
 
     init(from decoder: Decoder) throws {
@@ -282,6 +286,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         autoConnectOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .autoConnectOnLaunch) ?? true
         locationSyncPreference = try container.decodeIfPresent(LocationSyncPreference.self, forKey: .locationSyncPreference) ?? .foregroundOnly
         wakeWordEnabled = try container.decodeIfPresent(Bool.self, forKey: .wakeWordEnabled) ?? false
+        chatModelChoice = try container.decodeIfPresent(ChatModelChoice.self, forKey: .chatModelChoice) ?? .hermesDefault
     }
 
     func encode(to encoder: Encoder) throws {
@@ -295,6 +300,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encode(autoConnectOnLaunch, forKey: .autoConnectOnLaunch)
         try container.encode(locationSyncPreference, forKey: .locationSyncPreference)
         try container.encode(wakeWordEnabled, forKey: .wakeWordEnabled)
+        try container.encode(chatModelChoice, forKey: .chatModelChoice)
     }
 
     func applyingEnvironmentPolicy(
@@ -307,6 +313,27 @@ struct UserSettings: Codable, Hashable, Sendable {
             sanitized.relayConfiguration.relayMode = .custom
         }
         return sanitized
+    }
+}
+
+enum ChatModelChoice: String, Codable, CaseIterable, Hashable, Sendable, Identifiable {
+    case hermesDefault
+    case gemini38Flash
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .hermesDefault: "Hermes padrão"
+        case .gemini38Flash: "Gemini 3.8 Flash"
+        }
+    }
+
+    var modelOverride: String? {
+        switch self {
+        case .hermesDefault: nil
+        case .gemini38Flash: "gemini-3.8-flash"
+        }
     }
 }
 

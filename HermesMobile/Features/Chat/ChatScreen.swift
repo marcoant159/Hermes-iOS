@@ -112,7 +112,10 @@ struct ChatScreen: View {
     @State private var showContextPopover = false
 
     private var displayedModelName: String? {
-        chatStore.activeModelName ?? hostStore.currentHost?.hermesModel
+        if let selectedModel = settingsStore.settings.chatModelChoice.modelOverride {
+            return selectedModel
+        }
+        return chatStore.activeModelName ?? hostStore.currentHost?.hermesModel
     }
 
     private var effectiveContextWindow: Int? {
@@ -204,6 +207,37 @@ struct ChatScreen: View {
                         .font(Design.Typography.callout)
                         .foregroundStyle(Design.Colors.secondaryForeground)
                 }
+            }
+
+            VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                Text("Model for new messages")
+                    .font(.system(.caption2, weight: .semibold))
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .textCase(.uppercase)
+
+                ForEach(ChatModelChoice.allCases) { choice in
+                    Button {
+                        settingsStore.settings.chatModelChoice = choice
+                    } label: {
+                        HStack {
+                            Text(choice.displayName)
+                            Spacer(minLength: Design.Spacing.sm)
+                            if settingsStore.settings.chatModelChoice == choice {
+                                Image(systemName: "checkmark")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Design.Brand.accent)
+                            }
+                        }
+                        .font(Design.Typography.callout)
+                        .foregroundStyle(Design.Colors.foreground)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Text("Voice mode uses Gemini 3.8 Live.")
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
             }
 
             if let maxCtx = effectiveContextWindow, maxCtx > 0 {

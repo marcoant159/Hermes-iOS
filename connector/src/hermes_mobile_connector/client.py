@@ -1,8 +1,8 @@
 from __future__ import annotations
 import asyncio
 import base64
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import os
@@ -196,6 +196,8 @@ from .state import (
 from .talk_support import DEFAULT_REALTIME_MODELS, DEFAULT_REALTIME_VOICE, build_voice_context_snapshot
 
 OPENAI_REALTIME_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
+GEMINI_LIVE_AUTH_TOKENS_URL = "https://generativelanguage.googleapis.com/v1beta/auth_tokens"
+GEMINI_LIVE_MODEL = "gemini-3.8-live"
 
 
 def utcnow_iso() -> str:
@@ -484,21 +486,26 @@ class HermesMobileConnector:
         secrets = self.state_store.load_secrets()
         self.apply_runtime_environment(state)
         runtime = self.settings_for_state(state)
-        has_api_key = bool(secrets.openai_api_key)
-        configured = bool(config.enabled and has_api_key)
+        has_openai_api_key = bool(secrets.openai_api_key)
+        has_google_api_key = bool(self._google_api_key_for_state(state))
+        google_live_ready = has_google_api_key
+        openai_ready = bool(config.enabled and has_openai_api_key)
+        configured = google_live_ready or openai_ready
         blocked_reason = None
-        if not has_api_key:
-            blocked_reason = "OpenAI Realtime is not configured on this Hermes host."
-        elif config.last_validation_error:
+        if not configured:
+            blocked_reason = "Gemini Live is not configured on this Hermes host."
+        elif not google_live_ready and config.last_validation_error:
             blocked_reason = config.last_validation_error
+        validation_error = None if google_live_ready else config.last_validation_error
         return {
-            "configured": configured and config.last_validation_error is None,
-            "apiKeyPresent": has_api_key,
-            "preferredModels": config.preferred_models or list(DEFAULT_REALTIME_MODELS),
-            "selectedModel": config.last_selected_model,
-            "voice": config.voice or DEFAULT_REALTIME_VOICE,
+            "configured": configured and (google_live_ready or validation_error is None),
+            "apiKeyPresent": has_google_api_key or has_openai_api_key,
+            "provider": "gemini_live" if google_live_ready else "openai_realtime",
+            "preferredModels": [GEMINI_LIVE_MODEL] if google_live_ready else (config.preferred_models or list(DEFAULT_REALTIME_MODELS)),
+            "selectedModel": GEMINI_LIVE_MODEL if google_live_ready else config.last_selected_model,
+            "voice": "Aoede" if google_live_ready else (config.voice or DEFAULT_REALTIME_VOICE),
             "lastValidatedAt": config.last_validated_at,
-            "lastValidationError": config.last_validation_error,
+            "lastValidationError": validation_error,
             "blockedReason": blocked_reason,
             "mcpReadiness": native_mcp_readiness_message(hermes_command=runtime.hermes_command),
             "voiceContextUpdatedAt": state.voice_context_snapshot.updated_at if state.voice_context_snapshot else None,
@@ -681,7 +688,24 @@ class HermesMobileConnector:
             job["attachments"] = None  # staged to disk; don't pass raw data downstream
 
         try:
-            runtime = await self.runtime_adapter_for_state_async(state)
+            model_override = job.get("modelOverride")
+            if model_override:
+                if model_override != "gemini-3.8-flash":
+                    await websocket.send(json.dumps({
+                        "type": "job.failed",
+                        "jobId": job["id"],
+                        "retryable": False,
+                        "error": "Unsupported mobile model override.",
+                    }))
+                    return
+                settings = replace(
+                    self.settings_for_state(state),
+                    hermes_provider="gemini",
+                    hermes_model=model_override,
+                )
+                runtime = HermesRuntimeAdapter(HermesCLIExecutor(settings))
+            else:
+                runtime = await self.runtime_adapter_for_state_async(state)
             if not getattr(runtime, "supports_streaming", False):
                 await self._handle_job_cli(websocket, job, runtime)
                 return
@@ -946,11 +970,6 @@ class HermesMobileConnector:
         state = self.refresh_voice_context_if_stale()
         config = state.realtime_talk or RealtimeTalkConfig(enabled=False)
         secrets = self.state_store.load_secrets()
-        if not config.enabled or not secrets.openai_api_key:
-            raise RuntimeError("OpenAI Realtime talk mode is not configured on this Hermes host.")
-        if config.last_validation_error:
-            raise RuntimeError(config.last_validation_error)
-
         relay_mcp_url = params.get("relayMcpURL")
         if not relay_mcp_url:
             raise RuntimeError("Relay MCP URL is required.")
@@ -958,6 +977,24 @@ class HermesMobileConnector:
         snapshot = state.voice_context_snapshot
         if snapshot is None:
             raise RuntimeError("Voice context is not ready yet.")
+
+        google_api_key = self._google_api_key_for_state(state)
+        if google_api_key:
+            instructions = (
+                f"{snapshot.system_prompt}\n\n"
+                "Speak naturally in Brazilian Portuguese. For requests that need Hermes tools, "
+                "memory, files, or actions, call hermes_delegate and then explain the result."
+            )
+            return self._create_gemini_live_session(
+                api_key=google_api_key,
+                instructions=instructions,
+                relay_mcp_url=relay_mcp_url,
+            )
+
+        if not config.enabled or not secrets.openai_api_key:
+            raise RuntimeError("Gemini Live is not configured on this Hermes host.")
+        if config.last_validation_error:
+            raise RuntimeError(config.last_validation_error)
 
         session_payload, selected_model = self._create_openai_realtime_session(
             api_key=secrets.openai_api_key,
@@ -992,7 +1029,75 @@ class HermesMobileConnector:
             "session": session_data,
             "model": selected_model,
             "voice": config.voice or DEFAULT_REALTIME_VOICE,
+            "provider": "openai_realtime",
+            "relayMcpURL": relay_mcp_url,
             "voiceContextUpdatedAt": snapshot.updated_at,
+        }
+
+    def _google_api_key_for_state(self, state: ConnectorState) -> str | None:
+        for name in ("GOOGLE_API_KEY", "GEMINI_API_KEY"):
+            value = os.getenv(name, "").strip()
+            if value:
+                return value
+
+        configured_home = state.runtime_config.hermes_home if state.runtime_config else None
+        hermes_home = Path(configured_home or os.getenv("HERMES_HOME") or Path.home() / ".hermes").expanduser()
+        try:
+            lines = (hermes_home / ".env").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
+
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            name, value = line.split("=", 1)
+            if name.strip() not in {"GOOGLE_API_KEY", "GEMINI_API_KEY"}:
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            if value:
+                return value
+        return None
+
+    def _create_gemini_live_session(
+        self,
+        *,
+        api_key: str,
+        instructions: str,
+        relay_mcp_url: str,
+    ) -> dict:
+        now = datetime.now(timezone.utc)
+        response = httpx.post(
+            GEMINI_LIVE_AUTH_TOKENS_URL,
+            headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+            json={
+                "uses": 1,
+                "expireTime": (now + timedelta(minutes=30)).isoformat().replace("+00:00", "Z"),
+                "newSessionExpireTime": (now + timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
+                "liveConnectConstraints": {
+                    "model": f"models/{GEMINI_LIVE_MODEL}",
+                    "config": {"responseModalities": ["AUDIO"]},
+                },
+            },
+            timeout=30.0,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(self._extract_http_error_message(response))
+        token = response.json()
+        token_name = token.get("name")
+        if not isinstance(token_name, str) or not token_name:
+            raise RuntimeError("Gemini did not return a Live API ephemeral token.")
+        return {
+            "clientSecret": token_name,
+            "expiresAt": token.get("expireTime"),
+            "session": {},
+            "model": GEMINI_LIVE_MODEL,
+            "voice": "Aoede",
+            "provider": "gemini_live",
+            "relayMcpURL": relay_mcp_url,
+            "systemInstruction": instructions,
         }
 
     def _rpc_commands_catalog(self) -> dict:

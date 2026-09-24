@@ -74,6 +74,7 @@ final class LiveHermesClient: HermesClientProtocol {
         let text: String
         let clientMessageId: UUID
         let attachments: [AttachmentPayload]?
+        let modelOverride: String?
     }
 
     var connectionStatus: ConnectionStatus = .disconnected
@@ -83,17 +84,20 @@ final class LiveHermesClient: HermesClientProtocol {
     private let accessTokenProvider: @MainActor () async -> String?
     private let accessTokenRefresher: @MainActor () async -> String?
     private let allowDemoFallback: Bool
+    private let chatModelChoiceProvider: @MainActor () -> ChatModelChoice
 
     init(
         apiClient: RelayAPIClient,
         accessTokenProvider: @escaping @MainActor () async -> String?,
         accessTokenRefresher: @escaping @MainActor () async -> String? = { nil },
-        allowDemoFallback: Bool = true
+        allowDemoFallback: Bool = true,
+        chatModelChoiceProvider: @escaping @MainActor () -> ChatModelChoice = { .hermesDefault }
     ) {
         self.apiClient = apiClient
         self.accessTokenProvider = accessTokenProvider
         self.accessTokenRefresher = accessTokenRefresher
         self.allowDemoFallback = allowDemoFallback
+        self.chatModelChoiceProvider = chatModelChoiceProvider
     }
 
     func connect() async {
@@ -289,7 +293,8 @@ final class LiveHermesClient: HermesClientProtocol {
             conversationId: currentConversation?.id,
             text: text,
             clientMessageId: clientMessageID,
-            attachments: payloads
+            attachments: payloads,
+            modelOverride: chatModelChoiceProvider().modelOverride
         )
         try validateRequestBodySize(for: body)
         return body

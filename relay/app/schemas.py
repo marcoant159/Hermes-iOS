@@ -111,6 +111,7 @@ class MessageCreateRequest(BaseModel):
     text: str = Field(default="")
     clientMessageId: UUID | None = None
     attachments: list[AttachmentPayload] | None = Field(default=None, max_length=4)
+    modelOverride: str | None = Field(default=None, pattern=r"^gemini-3\.8-flash$")
 
     @model_validator(mode="after")
     def _require_text_or_attachments(self) -> "MessageCreateRequest":

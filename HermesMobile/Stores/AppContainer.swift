@@ -158,7 +158,8 @@ final class AppContainer {
                     await sessionStore.refreshAccessTokenIfNeeded()
                     return await sessionStore.currentAccessToken()
                 },
-                allowDemoFallback: allowMockFallbacks && usesMockPairingService
+                allowDemoFallback: allowMockFallbacks && usesMockPairingService,
+                chatModelChoiceProvider: { settingsStore.settings.chatModelChoice }
             ),
             fallback: MockHermesClient(),
             allowsFallback: { allowMockFallbacks && (activePairingStore?.isPaired != true || usesMockPairingService) }

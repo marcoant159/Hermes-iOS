@@ -510,6 +510,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "sessionId": job.session_id_snapshot,
             "timeoutSeconds": settings.connector_job_lease_seconds,
         }
+        if job.model_override:
+            job_data["modelOverride"] = job.model_override
         if voice_transcript_lines:
             job_data["voiceTranscriptContext"] = "\n".join(voice_transcript_lines)
         if user_message.attachments_data:
@@ -1026,6 +1028,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "session": bootstrap.get("session") or {},
                     "model": bootstrap.get("model"),
                     "voice": bootstrap.get("voice"),
+                    "provider": bootstrap.get("provider"),
+                    "relayMcpURL": bootstrap.get("relayMcpURL"),
+                    "systemInstruction": bootstrap.get("systemInstruction"),
                 },
             }
         )
@@ -1515,6 +1520,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             conversation_id=conversation.id,
             user_message_id=user_message.id,
             session_id_snapshot=conversation.hermes_session_id,
+            model_override=payload.modelOverride,
         )
 
         if request_settings.hermes_adapter == "connector":

@@ -1,5 +1,6 @@
-import AVFoundation
+@preconcurrency import AVFoundation
 import Foundation
+import Darwin
 import os
 
 #if canImport(WebRTC)
@@ -45,6 +46,9 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         let session: RealtimeSession
         let model: String?
         let voice: String?
+        let provider: String?
+        let relayMcpURL: String?
+        let systemInstruction: String?
     }
 
     private struct RealtimeSession: Decodable {
@@ -111,6 +115,14 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     private var accumulatedAssistantAudioPlaybackMilliseconds = 0
     private var ignoreCurrentAssistantFinalization = false
     private var lastImageItemID: String?
+    private let geminiAudioEngine = AVAudioEngine()
+    private let geminiAudioPlayer = AVAudioPlayerNode()
+    private var geminiInputConverter: AVAudioConverter?
+    private var geminiSocket: URLSessionWebSocketTask?
+    private var geminiReceiveTask: Task<Void, Never>?
+    private var geminiRelayMcpURL: String?
+    private var geminiInputTranscript = ""
+    private var geminiAssistantTranscript = ""
     fileprivate var isEndingSession = false
 
     #if canImport(WebRTC)
@@ -134,6 +146,8 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         self.urlSession = urlSession
         self.realtimeEventTransportOverride = realtimeEventTransportOverride
         super.init()
+        geminiAudioEngine.attach(geminiAudioPlayer)
+        geminiAudioEngine.connect(geminiAudioPlayer, to: geminiAudioEngine.mainMixerNode, format: nil)
         registerAudioSessionObservers()
         #if canImport(WebRTC)
         peerDelegate.owner = self
@@ -200,13 +214,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         assistantTextSource = nil
 
         do {
-            #if canImport(WebRTC)
-            // Phase 1: Prepare WebRTC (peer connection + SDP offer) in parallel
-            // with the relay bootstrap request. This saves ~200-500ms.
             try configureAudioSession()
-            let prepared = try await prepareWebRTC()
-            #endif
-
             let response: TalkSessionResponse = try await performAuthorizedRequest { [self] in
                 let token = await self.accessTokenProvider()
                 return try await self.apiClient.post(
@@ -219,18 +227,23 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             startedAt = .now
             latencyMetrics.relayBootstrapReceivedAt = .now
             startTimer()
-            #if canImport(WebRTC)
-            // Phase 2: Exchange SDP with the ephemeral key from bootstrap
-            try await connectWithPrepared(prepared, bootstrap: response.bootstrap)
-            #else
-            try await endRemoteSession()
-            blockedReason = "This build does not include the WebRTC client transport yet."
-            canStartSession = false
-            connectionState = .blocked
-            voiceState = .disconnected
-            statusMessage = blockedReason
-            #endif
+            if response.bootstrap.provider == "gemini_live" {
+                try await connectGeminiLive(response.bootstrap)
+            } else {
+                #if canImport(WebRTC)
+                let prepared = try await prepareWebRTC()
+                try await connectWithPrepared(prepared, bootstrap: response.bootstrap)
+                #else
+                try await endRemoteSession()
+                blockedReason = "This build does not include the WebRTC client transport yet."
+                canStartSession = false
+                connectionState = .blocked
+                voiceState = .disconnected
+                statusMessage = blockedReason
+                #endif
+            }
         } catch {
+            stopGeminiTransport()
             try? await endRemoteSession()
             voiceSessionID = nil
             startedAt = nil
@@ -264,6 +277,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         peerConnection = nil
         audioTrack = nil
         #endif
+        stopGeminiTransport()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         try? await endRemoteSession()
         voiceSessionID = nil
@@ -284,6 +298,22 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     @discardableResult
     func sendImage(_ imageData: Data, mimeType: String = "image/jpeg", triggerResponse: Bool = true) -> Bool {
         guard connectionState == .connected else { return false }
+
+        if geminiSocket != nil {
+            let payload: [String: Any] = [
+                "realtimeInput": [
+                    "video": [
+                        "data": imageData.base64EncodedString(),
+                        "mimeType": mimeType,
+                    ],
+                ],
+            ]
+            Task { @MainActor [weak self] in
+                await self?.sendGeminiMessage(payload)
+            }
+            transcriptItems.append(TranscriptItem(speaker: .user, text: "", imageData: imageData))
+            return true
+        }
 
         // Delete the previous image item so the model only sees the latest one.
         // Without this, the model references stale camera frames or old photos.
@@ -473,6 +503,10 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
 
         do {
             try configureAudioSession()
+            if geminiSocket != nil, !geminiAudioEngine.isRunning {
+                try geminiAudioEngine.start()
+                if !geminiAudioPlayer.isPlaying { geminiAudioPlayer.play() }
+            }
             if connectionState == .connected || connectionState == .connecting {
                 voiceState = .listening
                 statusMessage = "Listening"
@@ -791,6 +825,362 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     }
     #endif
 
+    private func connectGeminiLive(_ bootstrap: TalkBootstrap) async throws {
+        guard let mcpURL = bootstrap.relayMcpURL,
+              let endpoint = URL(string: "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained")
+        else {
+            throw RelayAPIClient.ClientError.requestFailed("Gemini Live session configuration is incomplete.")
+        }
+
+        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "access_token", value: bootstrap.clientSecret)]
+        guard let socketURL = components?.url else {
+            throw RelayAPIClient.ClientError.invalidURL(endpoint.absoluteString)
+        }
+
+        geminiRelayMcpURL = mcpURL
+        geminiSocket = urlSession.webSocketTask(with: socketURL)
+        guard let socket = geminiSocket else {
+            throw RelayAPIClient.ClientError.requestFailed("Could not create Gemini Live WebSocket.")
+        }
+        socket.resume()
+
+        let setup: [String: Any] = [
+            "setup": [
+                "model": "models/\(bootstrap.model ?? "gemini-3.8-live")",
+                "responseModalities": ["AUDIO"],
+                "systemInstruction": [
+                    "parts": [["text": bootstrap.systemInstruction ?? "Speak naturally in Brazilian Portuguese."]]
+                ],
+                "speechConfig": [
+                    "voiceConfig": [
+                        "prebuiltVoiceConfig": ["voiceName": bootstrap.voice ?? "Aoede"]
+                    ]
+                ],
+                "inputAudioTranscription": [:],
+                "outputAudioTranscription": [:],
+                "tools": [[
+                    "functionDeclarations": [[
+                        "name": "hermes_delegate",
+                        "description": "Send a request to the connected Hermes agent for tools, memory, files, or actions.",
+                        "parameters": [
+                            "type": "OBJECT",
+                            "properties": [
+                                "prompt": [
+                                    "type": "STRING",
+                                    "description": "The user's request for Hermes."
+                                ]
+                            ],
+                            "required": ["prompt"]
+                        ]
+                    ]]
+                ]]
+            ]
+        ]
+        try await sendGeminiMessage(setup)
+
+        let initialMessage = try await socket.receive()
+        let initialPayload = try decodeGeminiMessage(initialMessage)
+        if let error = initialPayload["error"] as? [String: Any] {
+            throw RelayAPIClient.ClientError.requestFailed(error["message"] as? String ?? "Gemini Live setup failed.")
+        }
+        guard initialPayload["setupComplete"] != nil else {
+            throw RelayAPIClient.ClientError.requestFailed("Gemini Live did not confirm the session setup.")
+        }
+
+        try startGeminiAudioCapture()
+        try geminiAudioEngine.start()
+        geminiAudioPlayer.play()
+        latencyMetrics.realtimeConnectedAt = .now
+        connectionState = .connected
+        voiceState = .listening
+        blockedReason = nil
+        canStartSession = true
+        statusMessage = "Listening with Gemini Live"
+        forceSpeakerIfNeeded()
+
+        geminiReceiveTask = Task { @MainActor [weak self] in
+            await self?.receiveGeminiMessages(from: socket)
+        }
+    }
+
+    private func startGeminiAudioCapture() throws {
+        let inputNode = geminiAudioEngine.inputNode
+        inputNode.removeTap(onBus: 0)
+        let inputFormat = inputNode.outputFormat(forBus: 0)
+        guard let outputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: 16_000,
+            channels: 1,
+            interleaved: false
+        ) else {
+            throw RelayAPIClient.ClientError.requestFailed("Could not prepare Gemini microphone audio format.")
+        }
+        let converter = AVAudioConverter(from: inputFormat, to: outputFormat)
+        converter?.primeMethod = .none
+        geminiInputConverter = converter
+
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+            guard let converter,
+                  let converted = Self.convertGeminiInput(buffer, converter: converter, format: outputFormat),
+                  let samples = converted.int16ChannelData?.pointee
+            else { return }
+            let byteCount = Int(converted.frameLength) * MemoryLayout<Int16>.size
+            let audioData = Data(bytes: samples, count: byteCount)
+            Task { @MainActor [weak self] in
+                guard let self, !self.isMuted else { return }
+                await self.sendGeminiAudio(audioData)
+            }
+        }
+        geminiAudioEngine.prepare()
+    }
+
+    private nonisolated static func convertGeminiInput(
+        _ inputBuffer: AVAudioPCMBuffer,
+        converter: AVAudioConverter,
+        format: AVAudioFormat
+    ) -> AVAudioPCMBuffer? {
+        final class ConversionState: @unchecked Sendable {
+            var didProvideInput = false
+        }
+
+        let frameRatio = format.sampleRate / inputBuffer.format.sampleRate
+        let capacity = AVAudioFrameCount(ceil(Double(inputBuffer.frameLength) * frameRatio)) + 32
+        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: max(capacity, 1)) else {
+            return nil
+        }
+        let state = ConversionState()
+        var conversionError: NSError?
+        let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outputStatus in
+            if state.didProvideInput {
+                outputStatus.pointee = .noDataNow
+                return nil
+            }
+            state.didProvideInput = true
+            outputStatus.pointee = .haveData
+            return inputBuffer
+        }
+        switch status {
+        case .haveData, .inputRanDry, .endOfStream:
+            return outputBuffer.frameLength > 0 ? outputBuffer : nil
+        case .error:
+            return nil
+        @unknown default:
+            return nil
+        }
+    }
+
+    private func sendGeminiAudio(_ audioData: Data) async {
+        guard geminiSocket != nil, !audioData.isEmpty else { return }
+        await sendGeminiMessage([
+            "realtimeInput": [
+                "audio": [
+                    "data": audioData.base64EncodedString(),
+                    "mimeType": "audio/pcm;rate=16000"
+                ]
+            ]
+        ])
+    }
+
+    private func sendGeminiMessage(_ payload: [String: Any]) async {
+        guard let socket = geminiSocket,
+              let data = try? JSONSerialization.data(withJSONObject: payload),
+              let message = String(data: data, encoding: .utf8)
+        else { return }
+        do {
+            try await socket.send(.string(message))
+        } catch {
+            Self.logger.error("Gemini Live send failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func receiveGeminiMessages(from socket: URLSessionWebSocketTask) async {
+        do {
+            while !Task.isCancelled, !isEndingSession {
+                let message = try await socket.receive()
+                let payload = try decodeGeminiMessage(message)
+                await handleGeminiMessage(payload)
+            }
+        } catch {
+            guard !isEndingSession else { return }
+            blockedReason = error.localizedDescription
+            connectionState = .failed
+            voiceState = .disconnected
+            statusMessage = "Gemini Live disconnected."
+        }
+    }
+
+    private func decodeGeminiMessage(_ message: URLSessionWebSocketTask.Message) throws -> [String: Any] {
+        let data: Data
+        switch message {
+        case .string(let text): data = Data(text.utf8)
+        case .data(let bytes): data = bytes
+        @unknown default:
+            throw RelayAPIClient.ClientError.requestFailed("Unsupported Gemini Live message format.")
+        }
+        guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw RelayAPIClient.ClientError.requestFailed("Gemini Live returned an invalid message.")
+        }
+        return payload
+    }
+
+    private func handleGeminiMessage(_ payload: [String: Any]) async {
+        if let error = payload["error"] as? [String: Any] {
+            let message = error["message"] as? String ?? "Gemini Live returned an error."
+            blockedReason = message
+            connectionState = .failed
+            voiceState = .disconnected
+            statusMessage = message
+            return
+        }
+
+        if let toolCall = payload["toolCall"] as? [String: Any] {
+            await handleGeminiToolCall(toolCall)
+        }
+        guard let serverContent = payload["serverContent"] as? [String: Any] else { return }
+
+        if let input = serverContent["inputTranscription"] as? [String: Any],
+           let text = input["text"] as? String {
+            appendGeminiUserTranscript(text)
+        }
+        if let output = serverContent["outputTranscription"] as? [String: Any],
+           let text = output["text"] as? String {
+            geminiAssistantTranscript += text
+            assistantTextSource = "audio"
+            appendAssistantDelta(text)
+        }
+        if let modelTurn = serverContent["modelTurn"] as? [String: Any],
+           let parts = modelTurn["parts"] as? [[String: Any]] {
+            for part in parts {
+                guard let inlineData = part["inlineData"] as? [String: Any],
+                      let base64 = inlineData["data"] as? String,
+                      let audioData = Data(base64Encoded: base64)
+                else { continue }
+                scheduleGeminiAudio(audioData)
+            }
+        }
+        if serverContent["interrupted"] as? Bool == true {
+            geminiAudioPlayer.stop()
+            geminiAudioPlayer.play()
+            voiceState = .listening
+            statusMessage = "Listening"
+        }
+        if serverContent["turnComplete"] as? Bool == true {
+            finalizeUserText(itemID: currentUserConversationItemID, finalText: geminiInputTranscript)
+            geminiInputTranscript = ""
+            finalizeAssistantText(geminiAssistantTranscript)
+            geminiAssistantTranscript = ""
+            voiceState = .listening
+            statusMessage = "Listening with Gemini Live"
+        } else if serverContent["generationComplete"] as? Bool == true {
+            voiceState = .listening
+            statusMessage = "Listening with Gemini Live"
+        }
+    }
+
+    private func appendGeminiUserTranscript(_ delta: String) {
+        guard !delta.isEmpty else { return }
+        geminiInputTranscript += delta
+        if currentUserConversationItemID == nil {
+            let itemID = "gemini-\(UUID().uuidString)"
+            let placeholder = TranscriptItem(speaker: .user, text: "\u{2026}", isPartial: true)
+            currentUserConversationItemID = itemID
+            transcriptItemIDsByConversationItemID[itemID] = placeholder.id
+            transcriptItems.append(placeholder)
+        }
+        updateUserTranscriptDelta(for: currentUserConversationItemID, delta: delta)
+    }
+
+    private func scheduleGeminiAudio(_ data: Data) {
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: 24_000,
+            channels: 1,
+            interleaved: false
+        ) else { return }
+        let frameCount = data.count / MemoryLayout<Int16>.size
+        guard frameCount > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)),
+              let samples = buffer.int16ChannelData?.pointee
+        else { return }
+        buffer.frameLength = AVAudioFrameCount(frameCount)
+        data.withUnsafeBytes { bytes in
+            if let source = bytes.baseAddress {
+                memcpy(samples, source, data.count)
+            }
+        }
+        geminiAudioPlayer.scheduleBuffer(buffer)
+        if !geminiAudioPlayer.isPlaying {
+            geminiAudioPlayer.play()
+        }
+        voiceState = .speaking
+        statusMessage = "Gemini is speaking."
+    }
+
+    private func handleGeminiToolCall(_ toolCall: [String: Any]) async {
+        guard let calls = toolCall["functionCalls"] as? [[String: Any]], !calls.isEmpty else { return }
+        voiceState = .thinking
+        statusMessage = "Hermes is working on that…"
+        var responses: [[String: Any]] = []
+        for call in calls {
+            let callID = call["id"] as? String ?? UUID().uuidString
+            let name = call["name"] as? String ?? "hermes_delegate"
+            let arguments = call["args"] as? [String: Any] ?? [:]
+            let prompt = arguments["prompt"] as? String ?? ""
+            do {
+                let result = try await callHermesDelegate(prompt)
+                responses.append(["id": callID, "name": name, "response": ["result": result]])
+            } catch {
+                responses.append(["id": callID, "name": name, "response": ["error": error.localizedDescription]])
+            }
+        }
+        await sendGeminiMessage(["toolResponse": ["functionResponses": responses]])
+    }
+
+    private func callHermesDelegate(_ prompt: String) async throws -> String {
+        guard let relayURL = geminiRelayMcpURL, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let url = URL(string: relayURL)
+        else {
+            throw RelayAPIClient.ClientError.requestFailed("Hermes tool delegation is unavailable.")
+        }
+        let body: [String: Any] = [
+            "jsonrpc": "2.0",
+            "id": UUID().uuidString,
+            "method": "tools/call",
+            "params": ["name": "hermes_delegate", "arguments": ["prompt": prompt]]
+        ]
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await urlSession.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200 ..< 300).contains(http.statusCode),
+              let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            throw RelayAPIClient.ClientError.requestFailed("Hermes delegation request failed.")
+        }
+        if let error = payload["error"] as? [String: Any] {
+            throw RelayAPIClient.ClientError.requestFailed(error["message"] as? String ?? "Hermes delegation failed.")
+        }
+        let result = payload["result"] as? [String: Any]
+        let content = result?["content"] as? [[String: Any]]
+        return content?.compactMap { $0["text"] as? String }.joined(separator: "\n") ?? "Hermes returned no text."
+    }
+
+    private func stopGeminiTransport() {
+        geminiReceiveTask?.cancel()
+        geminiReceiveTask = nil
+        geminiSocket?.cancel(with: .goingAway, reason: nil)
+        geminiSocket = nil
+        geminiRelayMcpURL = nil
+        geminiInputTranscript = ""
+        geminiAssistantTranscript = ""
+        geminiInputConverter = nil
+        geminiAudioEngine.inputNode.removeTap(onBus: 0)
+        geminiAudioPlayer.stop()
+        geminiAudioEngine.stop()
+    }
+
     private func appendAssistantDelta(_ delta: String) {
         guard !delta.isEmpty else { return }
         if let currentAssistantItemID,
@@ -978,6 +1368,13 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     /// must send the full sequence: cancel → clear → truncate.
     func manuallyInterruptAssistantOutput() {
         guard voiceState == .speaking || assistantAudioPlaybackStartedAtUptime != nil else { return }
+        if geminiSocket != nil {
+            geminiAudioPlayer.stop()
+            geminiAudioPlayer.play()
+            voiceState = .listening
+            statusMessage = "Listening with Gemini Live"
+            return
+        }
         interruptAssistantOutput(sendCancelAndClear: true)
         voiceState = .listening
         statusMessage = "Listening"

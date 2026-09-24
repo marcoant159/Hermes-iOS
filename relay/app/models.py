@@ -179,6 +179,7 @@ class MessageJob(Base):
     host_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("hermes_hosts.id"))
     claimed_connection_nonce: Mapped[str | None] = mapped_column(Text)
     session_id_snapshot: Mapped[str | None] = mapped_column(Text)
+    model_override: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="queued")
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
