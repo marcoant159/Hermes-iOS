@@ -259,7 +259,17 @@ final class AppContainer {
             container?.wakeWordService.handleAssistantReply(content)
         }
         container.talkStore.onSessionStateChanged = { [weak container] in
-            container?.updateWidgetData()
+            guard let container else { return }
+            container.updateWidgetData()
+            // Voice mode owns the microphone while a session is live.
+            Task { [weak container] in
+                guard let container else { return }
+                if container.talkStore.isSessionActive {
+                    await container.wakeWordService.suspendForExternalCapture()
+                } else {
+                    await container.wakeWordService.resumeAfterExternalCapture()
+                }
+            }
         }
         container.hostStore.onHostChanged = { [weak container] in
             guard let container else { return }

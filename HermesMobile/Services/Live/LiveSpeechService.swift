@@ -86,6 +86,9 @@ final class LiveSpeechService {
 
         guard !isListening else { return }
 
+        // Chat dictation and the wake word listener share the microphone.
+        await AppContainer.sharedDefault().wakeWordService.suspendForExternalCapture()
+
         transcript = ""
         streamTask?.cancel()
 
@@ -116,6 +119,9 @@ final class LiveSpeechService {
                         Self.logger.info("Dictation finished")
                         self.transcript = text
                         self.isListening = false
+                        Task {
+                            await AppContainer.sharedDefault().wakeWordService.resumeAfterExternalCapture()
+                        }
                         self.onTranscriptChange?(text)
                         if !text.isEmpty {
                             self.onAutoStop?(text)
@@ -138,6 +144,7 @@ final class LiveSpeechService {
 
         Task {
             await controller.stop()
+            await AppContainer.sharedDefault().wakeWordService.resumeAfterExternalCapture()
         }
     }
 

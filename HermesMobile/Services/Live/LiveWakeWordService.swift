@@ -72,7 +72,7 @@ final class LiveWakeWordService {
     /// Ignore transcripts for this long after resuming (own-speech tail).
     private static let resumeSuppression: TimeInterval = 1.0
     /// Give up waiting for the assistant reply and listen again.
-    private static let replyTimeout: TimeInterval = 180
+    private static let replyTimeout: TimeInterval = 90
     /// Shortest accepted command.
     private static let minimumCommandLength = 2
     /// Retry delay after a listener failure.
@@ -103,6 +103,7 @@ final class LiveWakeWordService {
     private var replyTimeoutTask: Task<Void, Never>?
     private var isRunning = false
 
+    private var isSuspended = false
     private var capturing = false
     private var triggerSegment = -1
     private var committedCommand = ""
@@ -165,9 +166,34 @@ final class LiveWakeWordService {
 
     /// Keeps the listener healthy when the app comes back to the foreground.
     func handleAppBecameActive() async {
-        guard isRunning else { return }
+        guard isRunning, !isSuspended else { return }
         await listener.restartIfNeeded()
         if phase == .off { phase = .listening }
+    }
+
+    /// Hands the microphone over to another capture path (Talk mode, chat
+    /// dictation). The listener stays enabled but releases the mic.
+    func suspendForExternalCapture() async {
+        guard isRunning, !isSuspended else { return }
+        isSuspended = true
+        resetCapture()
+        replyTimeoutTask?.cancel()
+        replyTimeoutTask = nil
+        await listener.pause()
+        phase = .off
+        Self.logger.info("wake word suspended for external capture")
+    }
+
+    /// Re-arms after the other capture path is done.
+    func resumeAfterExternalCapture() async {
+        guard isRunning, isSuspended else { return }
+        isSuspended = false
+        // Let the other session finish tearing down before taking the mic back.
+        try? await Task.sleep(for: .milliseconds(800))
+        guard isRunning, !isSuspended else { return }
+        await listener.resume()
+        suppressUntil = Date().addingTimeInterval(Self.resumeSuppression)
+        phase = .listening
     }
 
     // MARK: - Reply handling
@@ -206,10 +232,10 @@ final class LiveWakeWordService {
         case .failed(let message):
             lastError = message
             Self.logger.error("wake listener failed: \(message, privacy: .public)")
-            guard isRunning else { return }
+            guard isRunning, !isSuspended else { return }
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(Self.failureRetryDelay))
-                guard let self else { return }
+                guard let self, self.isRunning, !self.isSuspended else { return }
                 await self.listener.restartIfNeeded()
                 if self.phase == .off {
                     self.phase = .listening
@@ -499,6 +525,7 @@ private actor WakeListener {
     private var restartTask: Task<Void, Never>?
     private var outputContinuation: AsyncStream<Event>.Continuation?
     private var isSegmentRunning = false
+    private var segmentStartedAt = Date.distantPast
     private var isStopped = true
     private var isPaused = false
     private var segmentCounter = 0
@@ -652,6 +679,7 @@ private actor WakeListener {
         segmentCounter += 1
         let segment = segmentCounter
         isSegmentRunning = true
+        segmentStartedAt = Date()
 
         let transcriber = DictationTranscriber(locale: locale, preset: .progressiveShortDictation)
         self.transcriber = transcriber
@@ -707,9 +735,12 @@ private actor WakeListener {
         }
 
         guard !isStopped, !isPaused else { return }
+        // Don't hammer the analyzer when a segment finalizes instantly (silence/noise).
+        let ranFor = Date().timeIntervalSince(segmentStartedAt)
+        let restartDelay = ranFor < 1.0 ? 1000 : 250
         restartTask?.cancel()
         restartTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(250))
+            try? await Task.sleep(for: .milliseconds(restartDelay))
             await self?.restartIfNeeded()
         }
     }
