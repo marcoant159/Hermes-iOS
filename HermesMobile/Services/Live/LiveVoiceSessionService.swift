@@ -123,6 +123,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     private var geminiRelayMcpURL: String?
     private var geminiInputTranscript = ""
     private var geminiAssistantTranscript = ""
+    private var geminiIgnoreCurrentAudio = false
     fileprivate var isEndingSession = false
 
     #if canImport(WebRTC)
@@ -857,12 +858,12 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
                         "prebuiltVoiceConfig": ["voiceName": bootstrap.voice ?? "Aoede"]
                     ]
                 ],
-                "inputAudioTranscription": [:],
-                "outputAudioTranscription": [:],
+                "inputAudioTranscription": ["languageCodes": ["pt-BR"]],
+                "outputAudioTranscription": ["languageCodes": ["pt-BR"]],
                 "tools": [[
                     "functionDeclarations": [[
                         "name": "hermes_delegate",
-                        "description": "Send a request to the connected Hermes agent for tools, memory, files, or actions.",
+                        "description": "Delegate a voice request to the connected Hermes host. Use this when the user asks for something that requires tool access, file reads, memory lookups, or an action beyond what your cached context provides.",
                         "parameters": [
                             "type": "OBJECT",
                             "properties": [
@@ -877,7 +878,11 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
                 ]]
             ]
         ]
-        try await sendGeminiMessage(setup)
+        let setupData = try JSONSerialization.data(withJSONObject: setup)
+        guard let setupMessage = String(data: setupData, encoding: .utf8) else {
+            throw RelayAPIClient.ClientError.requestFailed("Could not encode Gemini Live setup.")
+        }
+        try await socket.send(.string(setupMessage))
 
         let initialMessage = try await socket.receive()
         let initialPayload = try decodeGeminiMessage(initialMessage)
@@ -1042,9 +1047,12 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         if let input = serverContent["inputTranscription"] as? [String: Any],
            let text = input["text"] as? String {
             appendGeminiUserTranscript(text)
+            finalizeUserText(itemID: currentUserConversationItemID, finalText: geminiInputTranscript)
+            geminiInputTranscript = ""
         }
         if let output = serverContent["outputTranscription"] as? [String: Any],
-           let text = output["text"] as? String {
+           let text = output["text"] as? String,
+           !geminiIgnoreCurrentAudio {
             geminiAssistantTranscript += text
             assistantTextSource = "audio"
             appendAssistantDelta(text)
@@ -1062,6 +1070,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         if serverContent["interrupted"] as? Bool == true {
             geminiAudioPlayer.stop()
             geminiAudioPlayer.play()
+            geminiIgnoreCurrentAudio = false
             voiceState = .listening
             statusMessage = "Listening"
         }
@@ -1070,6 +1079,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             geminiInputTranscript = ""
             finalizeAssistantText(geminiAssistantTranscript)
             geminiAssistantTranscript = ""
+            geminiIgnoreCurrentAudio = false
             voiceState = .listening
             statusMessage = "Listening with Gemini Live"
         } else if serverContent["generationComplete"] as? Bool == true {
@@ -1101,7 +1111,8 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         let frameCount = data.count / MemoryLayout<Int16>.size
         guard frameCount > 0,
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)),
-              let samples = buffer.int16ChannelData?.pointee
+              let samples = buffer.int16ChannelData?.pointee,
+              !geminiIgnoreCurrentAudio
         else { return }
         buffer.frameLength = AVAudioFrameCount(frameCount)
         data.withUnsafeBytes { bytes in
@@ -1109,7 +1120,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
                 memcpy(samples, source, data.count)
             }
         }
-        geminiAudioPlayer.scheduleBuffer(buffer)
+        geminiAudioPlayer.scheduleBuffer(buffer, completionHandler: nil)
         if !geminiAudioPlayer.isPlaying {
             geminiAudioPlayer.play()
         }
@@ -1175,6 +1186,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         geminiRelayMcpURL = nil
         geminiInputTranscript = ""
         geminiAssistantTranscript = ""
+        geminiIgnoreCurrentAudio = false
         geminiInputConverter = nil
         geminiAudioEngine.inputNode.removeTap(onBus: 0)
         geminiAudioPlayer.stop()
@@ -1371,6 +1383,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         if geminiSocket != nil {
             geminiAudioPlayer.stop()
             geminiAudioPlayer.play()
+            geminiIgnoreCurrentAudio = true
             voiceState = .listening
             statusMessage = "Listening with Gemini Live"
             return

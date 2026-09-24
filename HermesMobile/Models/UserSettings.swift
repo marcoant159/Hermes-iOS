@@ -247,7 +247,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         autoConnectOnLaunch: Bool = true,
         locationSyncPreference: LocationSyncPreference = .foregroundOnly,
         wakeWordEnabled: Bool = false,
-        chatModelChoice: ChatModelChoice = .hermesDefault
+        chatModelChoice: ChatModelChoice = .gemini38Flash
     ) {
         self.userName = userName
         self.avatarInitials = avatarInitials
@@ -286,7 +286,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         autoConnectOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .autoConnectOnLaunch) ?? true
         locationSyncPreference = try container.decodeIfPresent(LocationSyncPreference.self, forKey: .locationSyncPreference) ?? .foregroundOnly
         wakeWordEnabled = try container.decodeIfPresent(Bool.self, forKey: .wakeWordEnabled) ?? false
-        chatModelChoice = try container.decodeIfPresent(ChatModelChoice.self, forKey: .chatModelChoice) ?? .hermesDefault
+        chatModelChoice = try container.decodeIfPresent(ChatModelChoice.self, forKey: .chatModelChoice) ?? .gemini38Flash
     }
 
     func encode(to encoder: Encoder) throws {

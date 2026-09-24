@@ -198,6 +198,26 @@ from .talk_support import DEFAULT_REALTIME_MODELS, DEFAULT_REALTIME_VOICE, build
 OPENAI_REALTIME_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
 GEMINI_LIVE_AUTH_TOKENS_URL = "https://generativelanguage.googleapis.com/v1beta/auth_tokens"
 GEMINI_LIVE_MODEL = "gemini-3.8-live"
+GEMINI_LIVE_TOOLS = [{
+    "functionDeclarations": [{
+        "name": "hermes_delegate",
+        "description": (
+            "Delegate a voice request to the connected Hermes host. Use this when the user asks "
+            "for something that requires tool access, file reads, memory lookups, or an action "
+            "beyond what your cached context provides."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "prompt": {
+                    "type": "STRING",
+                    "description": "The user's request for Hermes.",
+                },
+            },
+            "required": ["prompt"],
+        },
+    }],
+}]
 
 
 def utcnow_iso() -> str:
@@ -1078,7 +1098,11 @@ class HermesMobileConnector:
                 "newSessionExpireTime": (now + timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
                 "liveConnectConstraints": {
                     "model": f"models/{GEMINI_LIVE_MODEL}",
-                    "config": {"responseModalities": ["AUDIO"]},
+                    "config": {
+                        "responseModalities": ["AUDIO"],
+                        "systemInstruction": {"parts": [{"text": instructions}]},
+                        "tools": GEMINI_LIVE_TOOLS,
+                    },
                 },
             },
             timeout=30.0,
