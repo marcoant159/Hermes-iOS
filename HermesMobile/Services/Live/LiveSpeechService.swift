@@ -212,8 +212,15 @@ private actor DictationController {
         stop()
         Self.logger.info("Preparing dictation controller")
 
-        guard let locale = await DictationTranscriber.supportedLocale(equivalentTo: .current) else {
-            Self.logger.error("No supported locale equivalent to current locale")
+        // Locale.current can fall back to the app's only localization (English),
+        // even when the device's preferred language is Portuguese.
+        let preferredLocale = Locale(
+            identifier: Locale.preferredLanguages.first ?? Locale.current.identifier
+        )
+        guard let locale = await DictationTranscriber.supportedLocale(
+            equivalentTo: preferredLocale
+        ) else {
+            Self.logger.error("No supported locale equivalent to preferred language")
             throw LiveSpeechService.SpeechError.unavailable
         }
 

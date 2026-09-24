@@ -540,7 +540,14 @@ private actor WakeListener {
     func start() async throws -> AsyncStream<Event> {
         stop()
 
-        guard let locale = await DictationTranscriber.supportedLocale(equivalentTo: .current) else {
+        // Use the device's preferred language. Locale.current can fall back to
+        // this English-only app's localization instead of the user's language.
+        let preferredLocale = Locale(
+            identifier: Locale.preferredLanguages.first ?? Locale.current.identifier
+        )
+        guard let locale = await DictationTranscriber.supportedLocale(
+            equivalentTo: preferredLocale
+        ) else {
             throw WakeWordError.speechUnavailable
         }
 
@@ -677,7 +684,12 @@ private actor WakeListener {
 
     private func startSegment() async throws {
         guard !isStopped, !isPaused else { return }
-        guard let locale = await DictationTranscriber.supportedLocale(equivalentTo: .current),
+        let preferredLocale = Locale(
+            identifier: Locale.preferredLanguages.first ?? Locale.current.identifier
+        )
+        guard let locale = await DictationTranscriber.supportedLocale(
+            equivalentTo: preferredLocale
+        ),
               let analyzerFormat else {
             throw WakeWordError.speechUnavailable
         }
