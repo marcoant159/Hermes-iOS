@@ -191,7 +191,8 @@ final class AppContainer {
                 accessTokenRefresher: {
                     await sessionStore.refreshAccessTokenIfNeeded()
                     return await sessionStore.currentAccessToken()
-                }
+                },
+                providerProvider: { settingsStore.settings.voiceEngineChoice.providerValue }
             )
         }
 

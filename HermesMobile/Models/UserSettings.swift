@@ -236,6 +236,8 @@ struct UserSettings: Codable, Hashable, Sendable {
     /// Hands-free "hey hermes" wake word listener (opt-in; needs mic in background).
     var wakeWordEnabled: Bool
     var chatModelChoice: ChatModelChoice
+    /// Realtime voice transport ("Motor de voz") requested when starting talk mode.
+    var voiceEngineChoice: VoiceEngineChoice
 
     init(
         userName: String = "User",
@@ -247,7 +249,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         autoConnectOnLaunch: Bool = true,
         locationSyncPreference: LocationSyncPreference = .foregroundOnly,
         wakeWordEnabled: Bool = false,
-        chatModelChoice: ChatModelChoice = .gemini38Flash
+        chatModelChoice: ChatModelChoice = .gemini38Flash,
+        voiceEngineChoice: VoiceEngineChoice = .auto
     ) {
         self.userName = userName
         self.avatarInitials = avatarInitials
@@ -259,6 +262,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.locationSyncPreference = locationSyncPreference
         self.wakeWordEnabled = wakeWordEnabled
         self.chatModelChoice = chatModelChoice
+        self.voiceEngineChoice = voiceEngineChoice
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -272,6 +276,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         case locationSyncPreference
         case wakeWordEnabled
         case chatModelChoice
+        case voiceEngineChoice
     }
 
     init(from decoder: Decoder) throws {
@@ -287,6 +292,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         locationSyncPreference = try container.decodeIfPresent(LocationSyncPreference.self, forKey: .locationSyncPreference) ?? .foregroundOnly
         wakeWordEnabled = try container.decodeIfPresent(Bool.self, forKey: .wakeWordEnabled) ?? false
         chatModelChoice = try container.decodeIfPresent(ChatModelChoice.self, forKey: .chatModelChoice) ?? .gemini38Flash
+        voiceEngineChoice = try container.decodeIfPresent(VoiceEngineChoice.self, forKey: .voiceEngineChoice) ?? .auto
     }
 
     func encode(to encoder: Encoder) throws {
@@ -301,6 +307,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encode(locationSyncPreference, forKey: .locationSyncPreference)
         try container.encode(wakeWordEnabled, forKey: .wakeWordEnabled)
         try container.encode(chatModelChoice, forKey: .chatModelChoice)
+        try container.encode(voiceEngineChoice, forKey: .voiceEngineChoice)
     }
 
     func applyingEnvironmentPolicy(
@@ -335,6 +342,25 @@ enum ChatModelChoice: String, Codable, CaseIterable, Hashable, Sendable, Identif
         case .gemini38Flash: "gemini-3.8-flash"
         }
     }
+}
+
+/// Which realtime transport the talk mode should request from the connector.
+enum VoiceEngineChoice: String, Codable, CaseIterable, Hashable, Sendable, Identifiable {
+    case auto
+    case codexRealtime = "codex_realtime"
+    case geminiLive = "gemini_live"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .auto: "Automático"
+        case .codexRealtime: "GPT Realtime (Codex)"
+        case .geminiLive: "Gemini Live"
+        }
+    }
+
+    var providerValue: String { rawValue }
 }
 
 enum AppEnvironment: String, Codable, CaseIterable, Hashable, Sendable {
