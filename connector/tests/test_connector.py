@@ -646,6 +646,9 @@ def test_realtime_session_creation_falls_back_to_secondary_model(monkeypatch, tm
 
 
 def test_talk_session_create_normalizes_client_secret_payload(monkeypatch, tmp_path):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     store = ConnectorStateStore(state_dir=tmp_path / "connector-realtime-session")
     store.save(
         ConnectorState(

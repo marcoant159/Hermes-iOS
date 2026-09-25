@@ -188,13 +188,16 @@ def upsert_device(
             environment=environment,
             last_seen_at=utcnow(),
         )
-        db.add(device)
         try:
             # `installation_id` é único e o app pode disparar register + redeem em
             # paralelo: o INSERT perdedor derrubava a requisição com 500
             # (duplicate key em devices_installation_id_key). O savepoint isola a
             # falha; a linha criada pela outra requisição é reaproveitada abaixo.
+            # O add/flush fica DENTRO do begin_nested(): um add() pendente antes
+            # dele é descarregado no snapshot da savepoint, antes que ela exista,
+            # e deixaria a sessão em PendingRollbackError sem proteger o INSERT.
             with db.begin_nested():
+                db.add(device)
                 db.flush()
         except IntegrityError:
             device = db.scalar(select(Device).where(Device.installation_id == installation_id))
@@ -268,6 +271,32 @@ def refresh_auth_session(db: Session, *, settings: Settings, refresh_token: str)
     return rotate_auth_session(db, settings=settings, user=user, device=device)
 
 
+def _claim_single_use_code(
+    db: Session,
+    *,
+    model,
+    record_id: str,
+    detail: str,
+) -> None:
+    """Atomically claim a single-use code by marking it redeemed.
+
+    The check-then-write pattern is racy: two concurrent redemptions of the
+    same code can both observe ``redeemed_at IS NULL`` and both proceed. A
+    conditional UPDATE closes that window — only the request whose UPDATE
+    matches a still-unredeemed row wins; the loser gets ``rowcount == 0`` and
+    is rejected.
+    """
+    result = db.execute(
+        update(model)
+        .where(model.id == record_id, model.redeemed_at.is_(None))
+        .values(redeemed_at=utcnow())
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+
 def redeem_pairing_invite(
     db: Session,
     *,
@@ -295,6 +324,13 @@ def redeem_pairing_invite(
     if normalize_datetime(invite.expires_at) < utcnow():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This setup code has expired.")
 
+    _claim_single_use_code(
+        db,
+        model=PairingInvite,
+        record_id=invite.id,
+        detail="This setup code has already been used.",
+    )
+
     user = User(display_name=display_name.strip())
     db.add(user)
     db.commit()
@@ -315,7 +351,6 @@ def redeem_pairing_invite(
     )
     auth_session, access_token, refresh_token = rotate_auth_session(db, settings=settings, user=user, device=device)
 
-    invite.redeemed_at = utcnow()
     invite.redeemed_user_id = user.id
     invite.redeemed_device_id = device.id
     db.commit()
@@ -362,6 +397,13 @@ def redeem_phone_pairing_code(
     if normalize_datetime(pairing_code.expires_at) < utcnow():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This phone pairing code has expired.")
 
+    _claim_single_use_code(
+        db,
+        model=PhonePairingCode,
+        record_id=pairing_code.id,
+        detail="This phone pairing code has already been used.",
+    )
+
     host = db.get(HermesHost, pairing_code.host_id)
     if host is None or host.revoked_at is not None or host.connector_token_hash is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This phone pairing code is invalid.")
@@ -385,7 +427,6 @@ def redeem_phone_pairing_code(
     )
     auth_session, access_token, refresh_token = rotate_auth_session(db, settings=settings, user=user, device=device)
 
-    pairing_code.redeemed_at = utcnow()
     pairing_code.redeemed_device_id = device.id
     db.commit()
     db.refresh(pairing_code)
@@ -416,6 +457,13 @@ def redeem_host_enrollment_invite(
     if normalize_datetime(invite.expires_at) < utcnow():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This host setup code has expired.")
 
+    _claim_single_use_code(
+        db,
+        model=HostEnrollmentInvite,
+        record_id=invite.id,
+        detail="This host setup code has already been used.",
+    )
+
     connector_token = generate_token()
     host = db.scalar(select(HermesHost).where(HermesHost.user_id == invite.user_id))
     if host is None:
@@ -445,7 +493,6 @@ def redeem_host_enrollment_invite(
     db.commit()
     db.refresh(host)
 
-    invite.redeemed_at = utcnow()
     invite.redeemed_host_id = host.id
     db.commit()
     db.refresh(invite)
@@ -668,7 +715,29 @@ def record_voice_turn(
         source=source,
         text=text,
     )
-    db.add(turn)
+    if client_turn_id:
+        try:
+            # `(voice_session_id, client_turn_id)` é único e o app pode repetir
+            # o POST em paralelo: o INSERT perdedor derrubava a requisição com
+            # 500. O savepoint isola a falha; a linha criada pela outra
+            # requisição é reaproveitada abaixo. O add/flush fica DENTRO do
+            # begin_nested(): um add() pendente antes dele é descarregado no
+            # snapshot da savepoint, antes que ela exista, e deixaria a sessão
+            # em PendingRollbackError sem proteger o INSERT.
+            with db.begin_nested():
+                db.add(turn)
+                db.flush()
+        except IntegrityError:
+            turn = db.scalar(
+                select(VoiceTurn).where(
+                    VoiceTurn.voice_session_id == voice_session_id,
+                    VoiceTurn.client_turn_id == client_turn_id,
+                )
+            )
+            if turn is None:
+                raise
+    else:
+        db.add(turn)
     db.commit()
     db.refresh(turn)
     return turn

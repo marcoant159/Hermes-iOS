@@ -712,24 +712,26 @@ class HermesMobileConnector:
         state = self.state_store.load()
         workdir = state.runtime_config.hermes_workdir if state.runtime_config else None
 
-        # Stage image attachments to disk and replace them with vision context
-        # in the user message. The Hermes API server can't handle multipart
-        # content arrays, but the agent's vision_analyze tool works on local files.
-        # Do this BEFORE runtime selection so streaming still works for image jobs.
-        attachments = job.get("attachments") or []
-        if attachments:
-            attachment_context = self._build_cli_attachment_context(
-                job_id=str(job["id"]),
-                attachments=attachments,
-            )
-            if attachment_context:
-                msg = job.get("latestUserMessage", "")
-                job["latestUserMessage"] = (
-                    f"{msg}\n\n{attachment_context}" if msg.strip() else attachment_context
-                )
-            job["attachments"] = None  # staged to disk; don't pass raw data downstream
-
         try:
+            # Stage image attachments to disk and replace them with vision context
+            # in the user message. The Hermes API server can't handle multipart
+            # content arrays, but the agent's vision_analyze tool works on local files.
+            # Do this BEFORE runtime selection so streaming still works for image jobs.
+            # Keep it inside the try so a staging failure still produces a
+            # job.failed instead of leaving the request hanging forever.
+            attachments = job.get("attachments") or []
+            if attachments:
+                attachment_context = self._build_cli_attachment_context(
+                    job_id=str(job["id"]),
+                    attachments=attachments,
+                )
+                if attachment_context:
+                    msg = job.get("latestUserMessage", "")
+                    job["latestUserMessage"] = (
+                        f"{msg}\n\n{attachment_context}" if msg.strip() else attachment_context
+                    )
+                job["attachments"] = None  # staged to disk; don't pass raw data downstream
+
             model_override = job.get("modelOverride")
             if model_override:
                 if model_override != "gemini-3.8-flash":
@@ -753,6 +755,16 @@ class HermesMobileConnector:
                 return
 
             await self._handle_job_streaming(websocket, job, runtime, workdir=workdir)
+        except Exception as error:  # noqa: BLE001
+            # Failures that happen before/around the runtime call itself (e.g. the
+            # staging write) must still reach the relay, otherwise the job stays
+            # "running" until its lease expires and the user sees no reply.
+            await websocket.send(json.dumps({
+                "type": "job.failed",
+                "jobId": job["id"],
+                "retryable": self._is_retryable_job_error(error),
+                "error": str(error),
+            }))
         finally:
             # Clean up staged attachment files after job completes
             staging_dir = self.state_store.state_dir / "attachment_staging" / str(job["id"])

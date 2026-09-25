@@ -118,6 +118,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     private let geminiAudioEngine = AVAudioEngine()
     private let geminiAudioPlayer = AVAudioPlayerNode()
     private var geminiInputConverter: AVAudioConverter?
+    private var geminiTapInstalled = false
     private var geminiSocket: URLSessionWebSocketTask?
     private var geminiReceiveTask: Task<Void, Never>?
     private var geminiResumeTask: Task<Void, Never>?
@@ -919,7 +920,10 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
 
     private func startGeminiAudioCapture() throws {
         let inputNode = geminiAudioEngine.inputNode
-        inputNode.removeTap(onBus: 0)
+        if geminiTapInstalled {
+            inputNode.removeTap(onBus: 0)
+            geminiTapInstalled = false
+        }
         let inputFormat = inputNode.outputFormat(forBus: 0)
         guard let outputFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
@@ -945,6 +949,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
                 await self.sendGeminiAudio(audioData)
             }
         }
+        geminiTapInstalled = true
         geminiAudioEngine.prepare()
     }
 
@@ -1016,14 +1021,22 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             }
         } catch {
             guard !isEndingSession else { return }
-            if geminiResumeTask != nil { return }
-            if geminiSessionResumptionHandle != nil {
+            // A socket that has already been replaced (e.g. we are mid-resume) can
+            // fail late. Ignore it so it cannot clobber the connection taking
+            // over; only the current socket's failure is actionable.
+            guard socket === geminiSocket else { return }
+            // Proactively resume only when no resume is already in flight.
+            if geminiResumeTask == nil, geminiSessionResumptionHandle != nil {
                 scheduleGeminiResume()
                 return
             }
+            // The live socket failed and cannot be resumed (or the resume that
+            // was in flight also failed): surface it so the caller stops
+            // treating the session as alive and can re-arm the wake word.
             blockedReason = error.localizedDescription
             connectionState = .failed
             voiceState = .disconnected
+            canStartSession = false
             statusMessage = "Gemini Live disconnected."
         }
     }
@@ -1065,9 +1078,10 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
 
         if let input = serverContent["inputTranscription"] as? [String: Any],
            let text = input["text"] as? String {
+            // Gemini streams the user transcription in several chunks. Keep
+            // accumulating them and only finalize when the turn actually ends
+            // (turnComplete), so one utterance stays a single TranscriptItem.
             appendGeminiUserTranscript(text)
-            finalizeUserText(itemID: currentUserConversationItemID, finalText: geminiInputTranscript)
-            geminiInputTranscript = ""
         }
         if let output = serverContent["outputTranscription"] as? [String: Any],
            let text = output["text"] as? String,
@@ -1094,8 +1108,10 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             statusMessage = "Listening"
         }
         if serverContent["turnComplete"] as? Bool == true {
-            finalizeUserText(itemID: currentUserConversationItemID, finalText: geminiInputTranscript)
-            geminiInputTranscript = ""
+            if !geminiInputTranscript.isEmpty {
+                finalizeUserText(itemID: currentUserConversationItemID, finalText: geminiInputTranscript)
+                geminiInputTranscript = ""
+            }
             finalizeAssistantText(geminiAssistantTranscript)
             geminiAssistantTranscript = ""
             geminiIgnoreCurrentAudio = false
@@ -1144,6 +1160,9 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
 
         geminiResumeTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            // Always clear the resume marker, including on early return/cancel,
+            // so a later receive failure is never masked by a stale task.
+            defer { self.geminiResumeTask = nil }
             do {
                 try await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled, !self.isEndingSession else { return }
@@ -1156,7 +1175,6 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
                 self.canStartSession = false
                 self.statusMessage = "Gemini Live could not resume."
             }
-            self.geminiResumeTask = nil
         }
     }
 
@@ -1264,7 +1282,10 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         geminiAssistantTranscript = ""
         geminiIgnoreCurrentAudio = false
         geminiInputConverter = nil
-        geminiAudioEngine.inputNode.removeTap(onBus: 0)
+        if geminiTapInstalled {
+            geminiAudioEngine.inputNode.removeTap(onBus: 0)
+            geminiTapInstalled = false
+        }
         geminiAudioPlayer.stop()
         geminiAudioEngine.stop()
     }

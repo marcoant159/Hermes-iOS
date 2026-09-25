@@ -157,6 +157,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "This is acceptable in development but must be changed for production."
         )
 
+    if not settings.connector_setup_secret:
+        if settings.environment not in ("development", "test"):
+            raise RuntimeError(
+                "CONNECTOR_SETUP_SECRET is not set. Set a strong random value via "
+                "the CONNECTOR_SETUP_SECRET env var before running in production. "
+                "Otherwise anyone can call /v1/connector/setup and provision a host. "
+                "This is a security requirement."
+            )
+        logger.warning(
+            "SECURITY: CONNECTOR_SETUP_SECRET is not set. /v1/connector/setup is open. "
+            "This is acceptable in development but must be configured for production."
+        )
+
     database = Database(settings.database_url)
 
     @asynccontextmanager
