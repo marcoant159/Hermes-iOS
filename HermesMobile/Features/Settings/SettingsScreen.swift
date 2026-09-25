@@ -275,7 +275,11 @@ struct SettingsScreen: View {
         guard settingsStore.settings.wakeWordEnabled else {
             return "Say \u{201C}oi hermes\u{201D} (or \u{201C}hey hermes\u{201D}), speak your command, and Hermes answers out loud. Keeps the microphone active in the background while the app is running."
         }
-        switch AppContainer.sharedDefault().wakeWordService.phase {
+        let wakeWordService = AppContainer.sharedDefault().wakeWordService
+        if wakeWordService.isSuspendedForExternalCapture {
+            return "Paused while another voice capture is active."
+        }
+        switch wakeWordService.phase {
         case .off:
             return "Starting the listener…"
         case .listening:

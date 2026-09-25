@@ -91,6 +91,11 @@ final class LiveWakeWordService {
 
     var isEnabled: Bool { phase != .off }
 
+    /// `true` while listening is paused so another capture path (Talk mode,
+    /// chat dictation) can own the microphone. `phase` reads `.off` in this
+    /// state, so the UI uses this to avoid showing "Starting…".
+    var isSuspendedForExternalCapture: Bool { isSuspended }
+
     /// Called with the spoken command (already stripped of the wake phrase).
     /// Async so the caller can push it through the chat pipeline before the
     /// service continues (the reply is spoken back later).
@@ -126,6 +131,10 @@ final class LiveWakeWordService {
 
     func start() async {
         guard !isRunning else { return }
+        // A fresh start must not inherit a suspension left over from a previous
+        // dead/short-lived run, otherwise suspendForExternalCapture() would
+        // no-op and two capture paths would hold the mic at once.
+        isSuspended = false
         do {
             try await Self.requestPermissions()
         } catch {
@@ -153,6 +162,7 @@ final class LiveWakeWordService {
 
     func stop() async {
         isRunning = false
+        isSuspended = false
         resetCapture()
         eventTask?.cancel()
         eventTask = nil
