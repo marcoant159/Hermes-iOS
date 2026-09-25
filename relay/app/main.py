@@ -40,6 +40,8 @@ from .schemas import (
     SensorLocationRequest,
     PushRegisterRequest,
     RefreshRequest,
+    TalkSDPExchangeRequest,
+    TalkSessionCreateRequest,
     VoiceTurnCreateRequest,
 )
 from .security import AuthContext, get_auth_context, get_db, get_settings, require_internal_key
@@ -964,6 +966,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/v1/talk/session")
     async def create_talk_session(
+        payload: TalkSessionCreateRequest | None = Body(default=None),
         auth: AuthContext = Depends(get_auth_context),
         db: Session = Depends(get_db),
         request_settings: Settings = Depends(get_settings),
@@ -979,14 +982,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         relay_mcp_url = f"{request_settings.public_base_url}/talk/mcp?token={relay_tool_token}"
 
+        params: dict = {
+            "voiceSessionId": voice_session.id,
+            "relayMcpURL": relay_mcp_url,
+        }
+        if payload is not None and payload.provider:
+            params["provider"] = payload.provider
+
         try:
             bootstrap = await send_connector_rpc(
                 auth.user.id,
                 method="talk.session.create",
-                params={
-                    "voiceSessionId": voice_session.id,
-                    "relayMcpURL": relay_mcp_url,
-                },
+                params=params,
                 timeout_seconds=request_settings.connector_rpc_timeout_seconds,
             )
         except HTTPException:
@@ -1066,6 +1073,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         db.commit()
         return success({"ended": True, "voiceSession": serialize_voice_session(voice_session)})
+
+    @app.post("/v1/talk/session/{voice_session_id}/sdp")
+    async def exchange_talk_session_sdp(
+        voice_session_id: str,
+        payload: TalkSDPExchangeRequest,
+        auth: AuthContext = Depends(get_auth_context),
+        db: Session = Depends(get_db),
+        request_settings: Settings = Depends(get_settings),
+    ) -> dict:
+        voice_session = get_voice_session(db, voice_session_id=voice_session_id)
+        if voice_session is None or voice_session.user_id != auth.user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Talk session not found.")
+        if voice_session.status != "active":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Talk session is not active.")
+        if len(payload.sdp.encode("utf-8")) > 64 * 1024:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="SDP offer exceeds the 64 KB limit.",
+            )
+
+        try:
+            result = await send_connector_rpc(
+                auth.user.id,
+                method="talk.sdp.exchange",
+                params={"voiceSessionId": voice_session.id, "sdp": payload.sdp},
+                timeout_seconds=request_settings.connector_rpc_timeout_seconds,
+            )
+        except HTTPException:
+            raise
+        except RuntimeError as error:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+        record_audit(
+            db,
+            actor_type="user",
+            actor_id=auth.user.id,
+            action="talk.session.sdp",
+            entity_type="voice_session",
+            entity_id=voice_session.id,
+            payload={"callId": result.get("callId")},
+        )
+        db.commit()
+        return success({"sdp": result.get("sdp"), "callId": result.get("callId")})
 
     @app.post("/v1/talk/session/{voice_session_id}/turns")
     def create_talk_turn(

@@ -154,6 +154,17 @@ class VoiceTurnCreateRequest(BaseModel):
     text: str = Field(min_length=1)
 
 
+class TalkSessionCreateRequest(BaseModel):
+    provider: str | None = Field(
+        default=None,
+        pattern="^(auto|codex_realtime|gemini_live|openai_realtime)$",
+    )
+
+
+class TalkSDPExchangeRequest(BaseModel):
+    sdp: str = Field(min_length=1)
+
+
 class InternalInboxCreateRequest(BaseModel):
     userId: UUID | None = None
     deviceId: UUID | None = None

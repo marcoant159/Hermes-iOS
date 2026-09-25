@@ -1091,3 +1091,231 @@ def test_clear_conversation_when_none_exists(tmp_path):
         assert clear_response.status_code == 200
         conversation = clear_response.json()["data"]["conversation"]
         assert len(conversation["messages"]) == 0
+
+
+def _hello_payload() -> dict:
+    return {
+        "type": "hello",
+        "connector": {
+            "platform": "macos",
+            "hostname": "test-host",
+            "connectorVersion": "0.1.0",
+            "hermesCommand": "/usr/local/bin/hermes",
+            "hermesVersion": "hermes 1.2.3",
+        },
+    }
+
+
+def _pair_phone(client: TestClient, connector_credential: str, installation_id: str) -> str:
+    pairing_code = create_phone_pairing_code(client, connector_credential)
+    return redeem_phone(client, pairing_code["displayCode"], installation_id)["auth"]["accessToken"]
+
+
+def test_talk_session_create_forwards_requested_provider(tmp_path):
+    with build_client(tmp_path) as client:
+        connector_data = setup_connector(client)
+        access_token = _pair_phone(
+            client, connector_data["connectorCredential"], "c0c0c0c0-d0d0-e0e0-f0f0-010101010101"
+        )
+
+        with client.websocket_connect(
+            "/v1/hosts/ws",
+            headers={"Authorization": f"Bearer {connector_data['connectorCredential']}"},
+        ) as websocket:
+            websocket.send_json(_hello_payload())
+            assert websocket.receive_json()["type"] == "ready"
+
+            create_response: dict = {}
+
+            def create_session() -> None:
+                create_response["payload"] = client.post(
+                    "/v1/talk/session",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    json={"provider": "codex_realtime"},
+                )
+
+            thread = Thread(target=create_session)
+            thread.start()
+            rpc = websocket.receive_json()
+            assert rpc["method"] == "talk.session.create"
+            assert rpc["params"]["provider"] == "codex_realtime"
+
+            websocket.send_json(
+                {
+                    "type": "rpc.response",
+                    "requestId": rpc["requestId"],
+                    "success": True,
+                    "result": {
+                        "clientSecret": None,
+                        "expiresAt": None,
+                        "session": {},
+                        "model": "gpt-realtime-1.5",
+                        "voice": "marin",
+                        "provider": "codex_realtime",
+                        "relayMcpURL": "https://relay.example.test/v1/talk/mcp?token=test",
+                    },
+                }
+            )
+            thread.join(timeout=5)
+
+            assert create_response["payload"].status_code == 200
+            bootstrap = create_response["payload"].json()["data"]["bootstrap"]
+            assert bootstrap["provider"] == "codex_realtime"
+            assert bootstrap["model"] == "gpt-realtime-1.5"
+            assert bootstrap["voice"] == "marin"
+            assert bootstrap["clientSecret"] is None
+
+
+def test_talk_session_create_rejects_unknown_provider(tmp_path):
+    with build_client(tmp_path) as client:
+        connector_data = setup_connector(client)
+        access_token = _pair_phone(
+            client, connector_data["connectorCredential"], "c1c1c1c1-d1d1-e1e1-f1f1-020202020202"
+        )
+
+        response = client.post(
+            "/v1/talk/session",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"provider": "bogus_provider"},
+        )
+
+        assert response.status_code == 422
+
+
+def test_talk_sdp_exchange_roundtrip(tmp_path):
+    with build_client(tmp_path) as client:
+        connector_data = setup_connector(client)
+        access_token = _pair_phone(
+            client, connector_data["connectorCredential"], "c2c2c2c2-d2d2-e2e2-f2f2-030303030303"
+        )
+        auth = {"Authorization": f"Bearer {access_token}"}
+
+        with client.websocket_connect(
+            "/v1/hosts/ws",
+            headers={"Authorization": f"Bearer {connector_data['connectorCredential']}"},
+        ) as websocket:
+            websocket.send_json(_hello_payload())
+            assert websocket.receive_json()["type"] == "ready"
+
+            create_response: dict = {}
+
+            def create_session() -> None:
+                create_response["payload"] = client.post("/v1/talk/session", headers=auth)
+
+            thread = Thread(target=create_session)
+            thread.start()
+            create_rpc = websocket.receive_json()
+            websocket.send_json(
+                {
+                    "type": "rpc.response",
+                    "requestId": create_rpc["requestId"],
+                    "success": True,
+                    "result": {
+                        "clientSecret": None,
+                        "expiresAt": None,
+                        "session": {},
+                        "model": "gpt-realtime-1.5",
+                        "voice": "marin",
+                        "provider": "codex_realtime",
+                    },
+                }
+            )
+            thread.join(timeout=5)
+            voice_session_id = create_response["payload"].json()["data"]["voiceSession"]["id"]
+
+            exchange_response: dict = {}
+
+            def exchange_sdp() -> None:
+                exchange_response["payload"] = client.post(
+                    f"/v1/talk/session/{voice_session_id}/sdp",
+                    headers=auth,
+                    json={"sdp": "v=0\r\noferta"},
+                )
+
+            exchange_thread = Thread(target=exchange_sdp)
+            exchange_thread.start()
+            sdp_rpc = websocket.receive_json()
+            assert sdp_rpc["type"] == "rpc.request"
+            assert sdp_rpc["method"] == "talk.sdp.exchange"
+            assert sdp_rpc["params"]["voiceSessionId"] == voice_session_id
+            assert sdp_rpc["params"]["sdp"] == "v=0\r\noferta"
+
+            websocket.send_json(
+                {
+                    "type": "rpc.response",
+                    "requestId": sdp_rpc["requestId"],
+                    "success": True,
+                    "result": {"sdp": "v=0\r\nresposta", "callId": "call_abc"},
+                }
+            )
+            exchange_thread.join(timeout=5)
+
+            assert exchange_response["payload"].status_code == 200
+            data = exchange_response["payload"].json()["data"]
+            assert data["sdp"] == "v=0\r\nresposta"
+            assert data["callId"] == "call_abc"
+
+
+def test_talk_sdp_exchange_rejects_unknown_session(tmp_path):
+    with build_client(tmp_path) as client:
+        connector_data = setup_connector(client)
+        access_token = _pair_phone(
+            client, connector_data["connectorCredential"], "c3c3c3c3-d3d3-e3e3-f3f3-040404040404"
+        )
+
+        response = client.post(
+            f"/v1/talk/session/{uuid.uuid4()}/sdp",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"sdp": "v=0\r\noferta"},
+        )
+
+        assert response.status_code == 404
+
+
+def test_talk_sdp_exchange_rejects_oversized_sdp(tmp_path):
+    with build_client(tmp_path) as client:
+        connector_data = setup_connector(client)
+        access_token = _pair_phone(
+            client, connector_data["connectorCredential"], "c4c4c4c4-d4d4-e4e4-f4f4-050505050505"
+        )
+        auth = {"Authorization": f"Bearer {access_token}"}
+
+        with client.websocket_connect(
+            "/v1/hosts/ws",
+            headers={"Authorization": f"Bearer {connector_data['connectorCredential']}"},
+        ) as websocket:
+            websocket.send_json(_hello_payload())
+            assert websocket.receive_json()["type"] == "ready"
+
+            create_response: dict = {}
+
+            def create_session() -> None:
+                create_response["payload"] = client.post("/v1/talk/session", headers=auth)
+
+            thread = Thread(target=create_session)
+            thread.start()
+            create_rpc = websocket.receive_json()
+            websocket.send_json(
+                {
+                    "type": "rpc.response",
+                    "requestId": create_rpc["requestId"],
+                    "success": True,
+                    "result": {
+                        "session": {},
+                        "model": "gpt-realtime-1.5",
+                        "voice": "marin",
+                        "provider": "codex_realtime",
+                    },
+                }
+            )
+            thread.join(timeout=5)
+            voice_session_id = create_response["payload"].json()["data"]["voiceSession"]["id"]
+
+            response = client.post(
+                f"/v1/talk/session/{voice_session_id}/sdp",
+                headers=auth,
+                json={"sdp": "a" * (64 * 1024 + 1)},
+            )
+
+            assert response.status_code == 413
+
