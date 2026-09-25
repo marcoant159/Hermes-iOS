@@ -9,7 +9,7 @@ import os
 
 @MainActor
 final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
-    private static let logger = Logger(subsystem: "io.hermesmobile.HermesMobile", category: "LiveVoiceSessionService")
+    private static let logger = Logger(subsystem: "br.com.marcoant.hermes", category: "LiveVoiceSessionService")
     private struct EmptyBody: Encodable {}
 
     private struct EmptyRelayResponse: Decodable {}

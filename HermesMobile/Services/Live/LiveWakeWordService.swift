@@ -39,7 +39,7 @@ enum WakeWordError: LocalizedError {
 @Observable
 final class LiveWakeWordService {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "io.hermesmobile.HermesMobile",
+        subsystem: Bundle.main.bundleIdentifier ?? "br.com.marcoant.hermes",
         category: "WakeWord"
     )
 
@@ -504,7 +504,7 @@ final class SpeechAnnouncer {
 /// segment) from fresh speech (new segment).
 private actor WakeListener {
     private static let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "io.hermesmobile.HermesMobile",
+        subsystem: Bundle.main.bundleIdentifier ?? "br.com.marcoant.hermes",
         category: "WakeListener"
     )
 
