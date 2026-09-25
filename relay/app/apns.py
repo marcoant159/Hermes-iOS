@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import logging
+import os
 import time
 from pathlib import Path
 import tempfile
@@ -197,11 +198,15 @@ def create_apns_client(settings: Settings) -> APNsClient | None:
         logger.info("APNs not configured (missing APNS_KEY_PATH or APNS_KEY_CONTENTS)")
         return None
 
+    temp_key_path: str | None = None
     if not key_path and key_contents:
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".p8", delete=False)
-        tmp.write(key_contents)
-        tmp.close()
+        try:
+            tmp.write(key_contents)
+        finally:
+            tmp.close()
         key_path = tmp.name
+        temp_key_path = tmp.name
         logger.info("APNs key loaded from APNS_KEY_CONTENTS")
 
     try:
@@ -220,3 +225,12 @@ def create_apns_client(settings: Settings) -> APNsClient | None:
     except Exception as e:
         logger.error("APNs client initialization failed: %s", e)
         return None
+    finally:
+        # APNsClient reads the key into memory on construction, so the
+        # temporary file can (and must) be removed to avoid leaking the
+        # private key material in /tmp.
+        if temp_key_path is not None:
+            try:
+                os.unlink(temp_key_path)
+            except OSError:
+                logger.warning("Failed to remove temporary APNs key file %s", temp_key_path, exc_info=True)
