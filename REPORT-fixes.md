@@ -90,3 +90,46 @@ job pode ficar pendurado além dos 300s de read timeout. Não adicionei um timeo
 `timeoutSeconds` do relay (180s, lease) é menor que o read timeout e usá-lo como deadline do job
 poderia matar análises de visão legítimas. Fica registrado como melhoria futura (ex.: deadline
 por job configurável via `timeoutSeconds` com piso maior).
+
+---
+
+# Resumo final
+
+## Arquivos alterados (por commit)
+- `2d03a94` `connector/tests/test_connector.py` — isola o teste de sessão realtime do ambiente
+  Gemini do host.
+- `9e56c58` `FORK-NOTES.md` — documenta o transporte Gemini Live e renumera as seções.
+- `cf8a076` `HermesMobile/Features/Settings/SettingsScreen.swift`,
+  `HermesMobile/Services/Live/LiveVoiceSessionService.swift`,
+  `HermesMobile/Services/Live/LiveWakeWordService.swift` — robustez do Gemini Live + status
+  "Paused" da wake word.
+- `57c7432` `relay/app/apns.py` — remoção do arquivo temporário da chave APNs.
+- `054c245` `relay/app/security.py`, `relay/app/main.py` — comparação em tempo constante +
+  exigência de `CONNECTOR_SETUP_SECRET` em produção.
+- `8ae846b` `relay/app/services.py` — claim atômico de códigos de uso único + savepoints em
+  `upsert_device`/`record_voice_turn`.
+- `1ac024d` `connector/src/hermes_mobile_connector/client.py`,
+  `connector/tests/test_streaming.py` — `job.failed` em falha de staging de anexo + 2 testes.
+- `3d44690` `REPORT-fixes.md` — este relatório.
+- `STALE-UNCOMMITTED-2026-09-24.patch` — aplicado e **apagado** (não commitado).
+
+## Testes rodados e resultado
+- `cd connector && PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_streaming.py`
+  → **19 passed**.
+- `... tests/test_connector.py::test_talk_session_create_normalizes_client_secret_payload`
+  → **1 passed**.
+- `... tests/test_connector.py -k "not rpc_commands_catalog"` → **28 passed** (exclui 4 testes que
+  invocam o CLI `hermes`).
+  - Observação: num momento de menor carga, `tests/test_connector.py` inteiro passou **32 passed
+    em 8s**. Depois, com vários agentes em paralelo (load ~6 em 4 cores), os 4 testes do catálogo
+    de RPC (que sobem o CLI `hermes`) travam por minutos; a suíte inteira estourava o timeout.
+    Não é regressão do código — o teste alvo e os demais passam.
+- `cd relay && .venv/bin/python -m pytest -q` → **59 passed** (0 F/E).
+- Não rodei nada de iOS (sem Xcode). Mudanças Swift foram revisadas linha a linha contra o patch.
+
+## Pendências / dúvidas
+1. **Timeout total de job no connector** (ver Etapa 3): pode hangar se o API server mantiver SSE
+   com keepalives; não corrigido por ser mudança de comportamento arriscada.
+2. **`test_sensor_store.py`**: ignorado, como instruído (datas fixas de abril/2026).
+3. A verificação dos Swift depende do build em outra máquina; não compilei.
+4. A suíte do relay e do connector está lenta por contenção da máquina (outros agentes/worktrees).
