@@ -247,7 +247,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         autoConnectOnLaunch: Bool = true,
         locationSyncPreference: LocationSyncPreference = .foregroundOnly,
         wakeWordEnabled: Bool = false,
-        chatModelChoice: ChatModelChoice = .gemini38Flash
+        chatModelChoice: ChatModelChoice = .hermesDefault
     ) {
         self.userName = userName
         self.avatarInitials = avatarInitials
@@ -286,7 +286,7 @@ struct UserSettings: Codable, Hashable, Sendable {
         autoConnectOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .autoConnectOnLaunch) ?? true
         locationSyncPreference = try container.decodeIfPresent(LocationSyncPreference.self, forKey: .locationSyncPreference) ?? .foregroundOnly
         wakeWordEnabled = try container.decodeIfPresent(Bool.self, forKey: .wakeWordEnabled) ?? false
-        chatModelChoice = try container.decodeIfPresent(ChatModelChoice.self, forKey: .chatModelChoice) ?? .gemini38Flash
+        chatModelChoice = try container.decodeIfPresent(ChatModelChoice.self, forKey: .chatModelChoice) ?? .hermesDefault
     }
 
     func encode(to encoder: Encoder) throws {
@@ -318,22 +318,57 @@ struct UserSettings: Codable, Hashable, Sendable {
 
 enum ChatModelChoice: String, Codable, CaseIterable, Hashable, Sendable, Identifiable {
     case hermesDefault
+    case gpt6Luna
+    case gpt6Astra
+    case gpt56Luna
     case gemini38Flash
+    case deepseekV41Flash
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .hermesDefault: "Hermes padrão"
+        case .hermesDefault: "Hermes padrão (GPT-6 Luna)"
+        case .gpt6Luna: "GPT-6 Luna"
+        case .gpt6Astra: "GPT-6 Astra"
+        case .gpt56Luna: "GPT-5.6 Luna"
         case .gemini38Flash: "Gemini 3.8 Flash"
+        case .deepseekV41Flash: "DeepSeek V4.1 Flash"
         }
     }
 
     var modelOverride: String? {
         switch self {
         case .hermesDefault: nil
-        case .gemini38Flash: "gemini-3.8-flash"
+        case .gpt6Luna: "openai-codex/gpt-6-luna"
+        case .gpt6Astra: "openai-codex/gpt-6-astra"
+        case .gpt56Luna: "openai-codex/gpt-5.6-luna"
+        case .gemini38Flash: "gemini/gemini-3.8-flash"
+        case .deepseekV41Flash: "opencode-go/deepseek-v4.1-flash"
         }
+    }
+
+    init(from decoder: Decoder) throws {
+        let rawValue = try decoder.singleValueContainer().decode(String.self)
+        switch rawValue {
+        case "gemini-3.8-flash", "gemini38Flash":
+            self = .gemini38Flash
+        default:
+            guard let choice = ChatModelChoice(rawValue: rawValue) else {
+                throw DecodingError.dataCorrupted(
+                    DecodingError.Context(
+                        codingPath: decoder.codingPath,
+                        debugDescription: "Unknown ChatModelChoice raw value: \(rawValue)"
+                    )
+                )
+            }
+            self = choice
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
     }
 }
 
