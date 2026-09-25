@@ -182,6 +182,7 @@ from .mcp_registration import (
     validate_native_mcp_tools,
     validate_native_mcp_server,
 )
+from .model_overrides import parse_model_override
 from .sensor_store import HealthSample, LocationReading, SensorStore
 from .runtime_adapter import HermesAPIRuntimeAdapter, HermesRuntimeAdapter, HostRuntimeAdapter, RuntimeConversationMessage
 from .service_management import build_service_manager
@@ -732,22 +733,31 @@ class HermesMobileConnector:
                     )
                 job["attachments"] = None  # staged to disk; don't pass raw data downstream
 
-            model_override = job.get("modelOverride")
-            if model_override:
-                if model_override != "gemini-3.8-flash":
-                    await websocket.send(json.dumps({
-                        "type": "job.failed",
-                        "jobId": job["id"],
-                        "retryable": False,
-                        "error": "Unsupported mobile model override.",
-                    }))
-                    return
-                settings = replace(
-                    self.settings_for_state(state),
-                    hermes_provider="gemini",
-                    hermes_model=model_override,
-                )
-                runtime = HermesRuntimeAdapter(HermesCLIExecutor(settings))
+            try:
+                override = parse_model_override(job.get("modelOverride"))
+            except ValueError:
+                await websocket.send(json.dumps({
+                    "type": "job.failed",
+                    "jobId": job["id"],
+                    "retryable": False,
+                    "error": "Unsupported mobile model override.",
+                }))
+                return
+
+            if override is not None:
+                provider, model = override
+                runtime = await self.runtime_adapter_for_state_async(state)
+                if isinstance(runtime, HermesAPIRuntimeAdapter):
+                    runtime = HermesAPIRuntimeAdapter(
+                        replace(runtime.executor, provider=provider, model=model)
+                    )
+                else:
+                    settings = replace(
+                        self.settings_for_state(state),
+                        hermes_provider=provider,
+                        hermes_model=model,
+                    )
+                    runtime = HermesRuntimeAdapter(HermesCLIExecutor(settings))
             else:
                 runtime = await self.runtime_adapter_for_state_async(state)
             if not getattr(runtime, "supports_streaming", False):

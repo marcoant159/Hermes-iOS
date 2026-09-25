@@ -112,9 +112,8 @@ struct ChatScreen: View {
     @State private var showContextPopover = false
 
     private var displayedModelName: String? {
-        if let selectedModel = settingsStore.settings.chatModelChoice.modelOverride {
-            return selectedModel
-        }
+        let choice = settingsStore.settings.chatModelChoice
+        guard choice == .hermesDefault else { return choice.displayName }
         return chatStore.activeModelName ?? hostStore.currentHost?.hermesModel
     }
 

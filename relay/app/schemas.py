@@ -4,7 +4,24 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+# Model overrides the mobile app may request (format "provider/model").
+# Single source of truth for relay-side validation.
+SUPPORTED_MODEL_OVERRIDES = frozenset({
+    "openai-codex/gpt-6-luna",
+    "openai-codex/gpt-6-astra",
+    "openai-codex/gpt-5.6-luna",
+    "gemini/gemini-3.8-flash",
+    "opencode-go/deepseek-v4.1-flash",
+})
+
+# Older app builds sent the bare Gemini model name; map it to the canonical
+# provider/model form so existing installs keep working.
+LEGACY_MODEL_OVERRIDES = {
+    "gemini-3.8-flash": "gemini/gemini-3.8-flash",
+}
 
 
 class Meta(BaseModel):
@@ -111,7 +128,17 @@ class MessageCreateRequest(BaseModel):
     text: str = Field(default="")
     clientMessageId: UUID | None = None
     attachments: list[AttachmentPayload] | None = Field(default=None, max_length=4)
-    modelOverride: str | None = Field(default=None, pattern=r"^gemini-3\.8-flash$")
+    modelOverride: str | None = None
+
+    @field_validator("modelOverride")
+    @classmethod
+    def _normalize_model_override(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = LEGACY_MODEL_OVERRIDES.get(value, value)
+        if normalized not in SUPPORTED_MODEL_OVERRIDES:
+            raise ValueError("Unsupported modelOverride.")
+        return normalized
 
     @model_validator(mode="after")
     def _require_text_or_attachments(self) -> "MessageCreateRequest":

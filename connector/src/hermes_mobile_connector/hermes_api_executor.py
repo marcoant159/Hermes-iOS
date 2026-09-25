@@ -39,6 +39,8 @@ class HermesAPIExecutor:
 
     api_server_url: str = DEFAULT_API_SERVER_URL
     api_server_key: str | None = None
+    provider: str | None = None
+    model: str | None = None
 
     def _base_url(self) -> str:
         return self.api_server_url.rstrip("/")
@@ -121,6 +123,34 @@ class HermesAPIExecutor:
 
         return messages
 
+    def _model_payload(self) -> dict[str, str]:
+        """Select the model fields for the chat completions request.
+
+        With a provider/model override the API server takes them per request;
+        otherwise we fall back to the server's ``hermes-agent`` default.
+        """
+        if self.provider and self.model:
+            return {"provider": self.provider, "model": self.model}
+        return {"model": "hermes-agent"}
+
+    def _build_payload(
+        self,
+        *,
+        stream: bool,
+        latest_user_message: str,
+        history: list[HermesConversationMessage] | None,
+        attachments: list[dict] | None,
+    ) -> dict:
+        return {
+            **self._model_payload(),
+            "messages": self._messages_payload(
+                latest_user_message=latest_user_message,
+                history=history,
+                attachments=attachments,
+            ),
+            "stream": stream,
+        }
+
     # ------------------------------------------------------------------
     # Health check
     # ------------------------------------------------------------------
@@ -160,15 +190,12 @@ class HermesAPIExecutor:
         if session_id:
             headers["X-Hermes-Session-Id"] = session_id
 
-        payload = {
-            "model": "hermes-agent",
-            "messages": self._messages_payload(
-                latest_user_message=latest_user_message,
-                history=history,
-                attachments=attachments,
-            ),
-            "stream": False,
-        }
+        payload = self._build_payload(
+            stream=False,
+            latest_user_message=latest_user_message,
+            history=history,
+            attachments=attachments,
+        )
 
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(connect=CONNECT_TIMEOUT, read=READ_TIMEOUT, write=30.0, pool=30.0),
@@ -217,15 +244,12 @@ class HermesAPIExecutor:
         if session_id:
             headers["X-Hermes-Session-Id"] = session_id
 
-        payload = {
-            "model": "hermes-agent",
-            "messages": self._messages_payload(
-                latest_user_message=latest_user_message,
-                history=history,
-                attachments=attachments,
-            ),
-            "stream": True,
-        }
+        payload = self._build_payload(
+            stream=True,
+            latest_user_message=latest_user_message,
+            history=history,
+            attachments=attachments,
+        )
 
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(connect=CONNECT_TIMEOUT, read=READ_TIMEOUT, write=30.0, pool=30.0),
