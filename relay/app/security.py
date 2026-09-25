@@ -70,7 +70,9 @@ def require_internal_key(
     x_relay_internal_key: str | None = Header(default=None, alias="X-Relay-Internal-Key"),
 ) -> None:
     settings = get_settings(request)
-    if x_relay_internal_key != settings.internal_api_key:
+    provided = (x_relay_internal_key or "").encode("utf-8")
+    expected = (settings.internal_api_key or "").encode("utf-8")
+    if not secrets.compare_digest(provided, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid internal API key.")
 
 
