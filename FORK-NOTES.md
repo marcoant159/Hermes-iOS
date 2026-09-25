@@ -23,7 +23,41 @@ Escuta contínua on-device + comando de voz com resposta falada.
 - **Uso**: Settings → Hands-Free → Wake Word. O app precisa estar rodando (foreground ou
   background com o indicador laranja); force-quit não é reaberto pelo iOS.
 
-## 2. Patches no relay (produção, no mesmo clone)
+## 2. Transporte de voz "Gemini Live" (mesma branch `feat/wake-word`)
+
+Quando o relay devolve `bootstrap.provider == "gemini_live"` (em vez do WebRTC/OpenAI
+Realtime), o app não usa WebRTC: abre um `URLSessionWebSocketTask` direto pro endpoint
+`BidiGenerateContentConstrained` do Gemini, com uma única tool `hermes_delegate` pra delegar
+pedidos ao Hermes via MCP do relay. O app agora usa esse caminho por padrão.
+
+- **Novo grosso da lógica**: `HermesMobile/Services/Live/LiveVoiceSessionService.swift` —
+  `connectGeminiLive(...)` (setup da sessão, `sessionResumption`/`goAway` com
+  `scheduleGeminiResume()` pra reconectar), captura/reprodução de áudio via `AVAudioEngine`
+  (entrada 16 kHz PCM, saída 24 kHz), transcrição de entrada/saída em pt-BR e
+  `callHermesDelegate` (POST JSON-RPC `tools/call` no `relayMcpURL`).
+- **Alterados**: `HermesMobile/Models/UserSettings.swift` — enum `ChatModelChoice`
+  (`.hermesDefault`/`.gemini38Flash`), campo `chatModelChoice`, e o default (init e decode)
+  mudou pra `.gemini38Flash`. `HermesMobile/Features/Chat/ChatScreen.swift` — seletor de
+  modelo no popover do chip de modelo. `HermesMobile/Services/Live/LiveHermesClient.swift` —
+  `modelOverride` no corpo do job. `HermesMobile/Stores/AppContainer.swift` — provider de
+  `chatModelChoice`.
+- **Connector**: `connector/src/hermes_mobile_connector/client.py` — `_google_api_key_for_state`
+  (lê `GOOGLE_API_KEY`/`GEMINI_API_KEY` do env ou do `.env` do `HERMES_HOME`) e
+  `_create_gemini_live_session` (~143 linhas): cunha token efêmero em `v1beta/auth_tokens` com
+  `bidiGenerateContentSetup` (modelo `gemini-3.8-live`, voz Aoede, `systemInstruction`, tool
+  `hermes_delegate`) e devolve `provider == "gemini_live"`. `talk/readiness` passa a reportar
+  provider/preferredModels/voz do Gemini quando há chave Google.
+- **Relay**: poucas linhas cada em `relay/app/database.py` (coluna `model_override`),
+  `main.py` (repassa `provider`/`relayMcpURL`/`systemInstruction` no bootstrap e
+  `modelOverride` no job), `models.py`/`schemas.py` (campo com pattern `^gemini-3\.8-flash$`)
+  e `services.py` (persiste no job).
+- **Aviso — arbitragem de microfone**: este caminho NÃO chama `suspendForExternalCapture()`
+  por conta própria. A suspensão da wake word (seção 1) só acontece indiretamente via
+  `TalkStore.onSessionStateChanged` em `AppContainer.swift`, deixando uma janela de corrida
+  entre a wake word ainda segurando o microfone e o Gemini Live reconfigurando a sessão de
+  áudio. Testar com Hands-Free e Talk ligados ao mesmo tempo.
+
+## 3. Patches no relay (produção, no mesmo clone)
 
 Não são deste repo de app, mas vivem em `/root/hermes-mobile/relay`:
 
@@ -32,13 +66,13 @@ Não são deste repo de app, mas vivem em `/root/hermes-mobile/relay`:
   `IntegrityError` — corrige a corrida `device/register` + `phone-pairing/redeem`
   (500 `duplicate key devices_installation_id_key` no pareamento).
 
-## 3. Build / CI
+## 4. Build / CI
 
 - `.github/workflows/ios-unsigned-ipa.yml` gera IPA **sem assinatura** em runner `macos-26`
   (Xcode 26.6) — repo público usa runner grátis; a assinatura fica no Sideloadly (Windows,
   conta Apple grátis, perfil de 7 dias).
 - Triggers: `master`, `feat/**` e `workflow_dispatch`.
 
-## 4. Arquivos de deploy locais (não versionados)
+## 5. Arquivos de deploy locais (não versionados)
 
 `relay/docker-compose.deploy.yml`, `relay/.env` — fora do git via `.git/info/exclude`.
