@@ -12,6 +12,7 @@ import re
 import socket
 import subprocess
 import sys
+import time
 import uuid
 
 logger = logging.getLogger("hermes.mobile.connector")
@@ -193,7 +194,18 @@ from .state import (
     ConnectorStateStore,
     RealtimeTalkConfig,
 )
-from .talk_support import DEFAULT_REALTIME_MODELS, DEFAULT_REALTIME_VOICE, build_voice_context_snapshot
+from .talk_support import (
+    CODEX_ORIGINATOR,
+    CODEX_REALTIME_CALLS_URL,
+    CODEX_REALTIME_MODEL,
+    CODEX_REALTIME_VOICE,
+    CODEX_USER_AGENT,
+    DEFAULT_REALTIME_MODELS,
+    DEFAULT_REALTIME_VOICE,
+    CodexCredentials,
+    build_voice_context_snapshot,
+    load_codex_credentials,
+)
 
 OPENAI_REALTIME_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
 GEMINI_LIVE_AUTH_TOKENS_URL = "https://generativelanguage.googleapis.com/v1beta/auth_tokens"
@@ -257,6 +269,7 @@ class HermesMobileConnector:
         self.reconnect_delay_seconds = reconnect_delay_seconds
         self._sensor_store: SensorStore | None = None
         self._voice_delegate_sessions: dict[str, str] = {}
+        self._codex_realtime_sessions: dict[str, dict] = {}
         self._health_cache: tuple[float, HostRuntimeAdapter | None] = (0.0, None)
         self._HEALTH_CACHE_TTL: float = 30.0
         # Jobs still run one at a time, but off the receive loop so RPCs
@@ -512,28 +525,58 @@ class HermesMobileConnector:
         runtime = self.settings_for_state(state)
         has_openai_api_key = bool(secrets.openai_api_key)
         has_google_api_key = bool(self._google_api_key_for_state(state))
+        has_codex_credentials = self._codex_credentials_for_state(state) is not None
         google_live_ready = has_google_api_key
-        openai_ready = bool(config.enabled and has_openai_api_key)
-        configured = google_live_ready or openai_ready
+        openai_ready = bool(config.enabled and has_openai_api_key and not config.last_validation_error)
+        configured = has_codex_credentials or google_live_ready or openai_ready
+
+        if has_codex_credentials:
+            provider = "codex_realtime"
+            preferred_models = [CODEX_REALTIME_MODEL]
+            selected_model = CODEX_REALTIME_MODEL
+            voice = CODEX_REALTIME_VOICE
+            validation_error = None
+        elif google_live_ready:
+            provider = "gemini_live"
+            preferred_models = [GEMINI_LIVE_MODEL]
+            selected_model = GEMINI_LIVE_MODEL
+            voice = "Aoede"
+            validation_error = None
+        else:
+            provider = "openai_realtime"
+            preferred_models = config.preferred_models or list(DEFAULT_REALTIME_MODELS)
+            selected_model = config.last_selected_model
+            voice = config.voice or DEFAULT_REALTIME_VOICE
+            validation_error = config.last_validation_error
+
         blocked_reason = None
         if not configured:
-            blocked_reason = "Gemini Live is not configured on this Hermes host."
-        elif not google_live_ready and config.last_validation_error:
-            blocked_reason = config.last_validation_error
-        validation_error = None if google_live_ready else config.last_validation_error
+            if config.last_validation_error and (has_openai_api_key or config.enabled):
+                blocked_reason = config.last_validation_error
+            else:
+                blocked_reason = "Talk mode is not configured on this Hermes host."
+
         return {
-            "configured": configured and (google_live_ready or validation_error is None),
-            "apiKeyPresent": has_google_api_key or has_openai_api_key,
-            "provider": "gemini_live" if google_live_ready else "openai_realtime",
-            "preferredModels": [GEMINI_LIVE_MODEL] if google_live_ready else (config.preferred_models or list(DEFAULT_REALTIME_MODELS)),
-            "selectedModel": GEMINI_LIVE_MODEL if google_live_ready else config.last_selected_model,
-            "voice": "Aoede" if google_live_ready else (config.voice or DEFAULT_REALTIME_VOICE),
+            "configured": configured,
+            "apiKeyPresent": has_google_api_key or has_openai_api_key or has_codex_credentials,
+            "provider": provider,
+            "preferredModels": preferred_models,
+            "selectedModel": selected_model,
+            "voice": voice,
             "lastValidatedAt": config.last_validated_at,
             "lastValidationError": validation_error,
             "blockedReason": blocked_reason,
             "mcpReadiness": native_mcp_readiness_message(hermes_command=runtime.hermes_command),
             "voiceContextUpdatedAt": state.voice_context_snapshot.updated_at if state.voice_context_snapshot else None,
         }
+
+    def _codex_credentials_for_state(self, state: ConnectorState) -> CodexCredentials | None:
+        configured_home = state.runtime_config.hermes_home if state.runtime_config else None
+        hermes_home = configured_home or os.getenv("HERMES_HOME")
+        try:
+            return load_codex_credentials(hermes_home=hermes_home)
+        except Exception:  # noqa: BLE001 — missing/invalid credentials are an expected state
+            return None
 
     def refresh_runtime_config(self, *, force: bool = False) -> ConnectorState:
         state = self.state_store.load()
@@ -982,6 +1025,8 @@ class HermesMobileConnector:
                 result = self._rpc_talk_session_create(params)
             elif method == "talk.session.end":
                 result = self._rpc_talk_session_end(params)
+            elif method == "talk.sdp.exchange":
+                result = self._rpc_talk_sdp_exchange(params)
             elif method in {"talk.delegate", "talk.hermes_delegate"}:
                 result = await self._rpc_talk_delegate(params)
             elif method == "commands.catalog":
@@ -1020,8 +1065,32 @@ class HermesMobileConnector:
         if snapshot is None:
             raise RuntimeError("Voice context is not ready yet.")
 
+        requested_provider = str(params.get("provider") or "auto").strip().lower()
+        voice_session_id = str(params.get("voiceSessionId") or "").strip()
+
+        codex_credentials = self._codex_credentials_for_state(state)
         google_api_key = self._google_api_key_for_state(state)
-        if google_api_key:
+        openai_ready = bool(config.enabled and secrets.openai_api_key and not config.last_validation_error)
+
+        provider = self._resolve_talk_provider(
+            requested=requested_provider,
+            codex_ready=codex_credentials is not None,
+            gemini_ready=bool(google_api_key),
+            openai_ready=openai_ready,
+            config=config,
+        )
+
+        if provider == "codex_realtime":
+            return self._create_codex_realtime_session(
+                credentials=codex_credentials,
+                voice_session_id=voice_session_id,
+                config=config,
+                instructions=snapshot.system_prompt,
+                relay_mcp_url=relay_mcp_url,
+                snapshot_updated_at=snapshot.updated_at,
+            )
+
+        if provider == "gemini_live":
             instructions = (
                 f"{snapshot.system_prompt}\n\n"
                 "Speak naturally in Brazilian Portuguese. For requests that need Hermes tools, "
@@ -1032,11 +1101,6 @@ class HermesMobileConnector:
                 instructions=instructions,
                 relay_mcp_url=relay_mcp_url,
             )
-
-        if not config.enabled or not secrets.openai_api_key:
-            raise RuntimeError("Gemini Live is not configured on this Hermes host.")
-        if config.last_validation_error:
-            raise RuntimeError(config.last_validation_error)
 
         session_payload, selected_model = self._create_openai_realtime_session(
             api_key=secrets.openai_api_key,
@@ -1075,6 +1139,145 @@ class HermesMobileConnector:
             "relayMcpURL": relay_mcp_url,
             "voiceContextUpdatedAt": snapshot.updated_at,
         }
+
+    @staticmethod
+    def _resolve_talk_provider(
+        *,
+        requested: str,
+        codex_ready: bool,
+        gemini_ready: bool,
+        openai_ready: bool,
+        config: RealtimeTalkConfig,
+    ) -> str:
+        if requested == "codex_realtime":
+            if not codex_ready:
+                raise RuntimeError(
+                    "Codex Realtime is not available: no valid Codex OAuth credentials were found on this Hermes host."
+                )
+            return "codex_realtime"
+        if requested == "gemini_live":
+            if not gemini_ready:
+                raise RuntimeError("Gemini Live is not configured on this Hermes host.")
+            return "gemini_live"
+        if requested == "openai_realtime":
+            if not openai_ready:
+                if config.last_validation_error:
+                    raise RuntimeError(config.last_validation_error)
+                raise RuntimeError("OpenAI Realtime is not configured on this Hermes host.")
+            return "openai_realtime"
+        if requested not in {"", "auto"}:
+            raise RuntimeError(f"Unsupported talk provider: {requested}")
+
+        # Auto preference: Codex OAuth > Gemini Live > OpenAI API key.
+        if codex_ready:
+            return "codex_realtime"
+        if gemini_ready:
+            return "gemini_live"
+        if openai_ready:
+            return "openai_realtime"
+        if config.last_validation_error:
+            raise RuntimeError(config.last_validation_error)
+        raise RuntimeError("Talk mode is not configured on this Hermes host.")
+
+    def _create_codex_realtime_session(
+        self,
+        *,
+        credentials: CodexCredentials | None,
+        voice_session_id: str,
+        config: RealtimeTalkConfig,
+        instructions: str,
+        relay_mcp_url: str,
+        snapshot_updated_at: str,
+    ) -> dict:
+        if credentials is None:
+            raise RuntimeError(
+                "Codex Realtime is not available: no valid Codex OAuth credentials were found on this Hermes host."
+            )
+
+        session_definition = self._build_realtime_session_definition(
+            model=CODEX_REALTIME_MODEL,
+            instructions=instructions,
+            relay_mcp_url=relay_mcp_url,
+            config=config,
+            transcription_language="pt",
+        )
+        session_definition["audio"]["output"]["voice"] = CODEX_REALTIME_VOICE
+
+        if voice_session_id:
+            self._codex_realtime_sessions[voice_session_id] = {
+                "session": session_definition,
+                "created_at": time.monotonic(),
+            }
+
+        return {
+            "clientSecret": None,
+            "expiresAt": None,
+            "session": {},
+            "model": CODEX_REALTIME_MODEL,
+            "voice": CODEX_REALTIME_VOICE,
+            "provider": "codex_realtime",
+            "relayMcpURL": relay_mcp_url,
+            "voiceContextUpdatedAt": snapshot_updated_at,
+        }
+
+    _CODEX_REALTIME_SESSION_TTL_SECONDS = 600.0
+
+    def _codex_realtime_session_definition(self, voice_session_id: str) -> dict | None:
+        entry = self._codex_realtime_sessions.get(voice_session_id)
+        if entry is None:
+            return None
+        if time.monotonic() - float(entry.get("created_at") or 0.0) > self._CODEX_REALTIME_SESSION_TTL_SECONDS:
+            self._codex_realtime_sessions.pop(voice_session_id, None)
+            return None
+        return entry.get("session")
+
+    def _rpc_talk_sdp_exchange(self, params: dict) -> dict:
+        voice_session_id = str(params.get("voiceSessionId") or "").strip()
+        sdp = params.get("sdp")
+        if not voice_session_id:
+            raise RuntimeError("voiceSessionId is required.")
+        if not isinstance(sdp, str) or not sdp.strip():
+            raise RuntimeError("A non-empty SDP offer is required.")
+
+        session_definition = self._codex_realtime_session_definition(voice_session_id)
+        if session_definition is None:
+            raise RuntimeError("Talk SDP session not found or expired.")
+
+        state = self.state_store.load()
+        credentials = self._codex_credentials_for_state(state)
+        if credentials is None:
+            raise RuntimeError("Codex OAuth credentials are no longer available.")
+
+        try:
+            response = httpx.post(
+                CODEX_REALTIME_CALLS_URL,
+                headers={
+                    "Authorization": f"Bearer {credentials.access_token}",
+                    "ChatGPT-Account-Id": credentials.account_id,
+                    "originator": CODEX_ORIGINATOR,
+                    "User-Agent": CODEX_USER_AGENT,
+                    "Content-Type": "application/json",
+                },
+                json={"sdp": sdp, "session": session_definition},
+                timeout=20.0,
+            )
+        except Exception as error:  # noqa: BLE001
+            raise RuntimeError(f"Codex Realtime SDP exchange failed: {error}") from error
+
+        if response.status_code >= 400:
+            excerpt = " ".join((response.text or "").split())[:300]
+            raise RuntimeError(
+                "Codex Realtime SDP exchange failed with HTTP "
+                f"{response.status_code}: {excerpt or 'no response body'}"
+            )
+
+        answer = response.text or ""
+        if not answer.strip():
+            raise RuntimeError("Codex Realtime returned an empty SDP answer.")
+
+        location = response.headers.get("Location") or ""
+        call_id = location.rstrip("/").rsplit("/", 1)[-1] if location else None
+        return {"sdp": answer, "callId": call_id}
 
     def _google_api_key_for_state(self, state: ConnectorState) -> str | None:
         for name in ("GOOGLE_API_KEY", "GEMINI_API_KEY"):
@@ -1567,6 +1770,7 @@ class HermesMobileConnector:
         voice_session_id = str(params.get("voiceSessionId") or "").strip()
         if voice_session_id:
             self._voice_delegate_sessions.pop(voice_session_id, None)
+            self._codex_realtime_sessions.pop(voice_session_id, None)
         return {"ended": True, "voiceSessionId": voice_session_id or None}
 
     async def _rpc_talk_delegate(self, params: dict) -> dict:
@@ -1605,40 +1809,12 @@ class HermesMobileConnector:
         preferred_models = config.preferred_models or list(DEFAULT_REALTIME_MODELS)
         for model in preferred_models:
             try:
-                turn_detection: dict = {
-                    "type": config.turn_detection_type,
-                    "create_response": config.create_response,
-                    "interrupt_response": config.interrupt_response,
-                }
-                if config.turn_detection_type == "semantic_vad":
-                    turn_detection["eagerness"] = "medium"
-
-                session_definition: dict = {
-                    "type": "realtime",
-                    "model": model,
-                    "instructions": instructions,
-                    "audio": {
-                        "output": {
-                            "voice": config.voice or DEFAULT_REALTIME_VOICE,
-                        },
-                        "input": {
-                            "turn_detection": turn_detection,
-                            "transcription": {
-                                "model": "gpt-4o-mini-transcribe",
-                            },
-                        },
-                    },
-                }
-                if relay_mcp_url:
-                    session_definition["tools"] = [
-                        {
-                            "type": "mcp",
-                            "server_label": "hermes_mobile_relay",
-                            "server_url": relay_mcp_url,
-                            "allowed_tools": ["hermes_delegate"],
-                            "require_approval": "never",
-                        }
-                    ]
+                session_definition = self._build_realtime_session_definition(
+                    model=model,
+                    instructions=instructions,
+                    relay_mcp_url=relay_mcp_url,
+                    config=config,
+                )
 
                 response = httpx.post(
                     OPENAI_REALTIME_CLIENT_SECRETS_URL,
@@ -1659,6 +1835,53 @@ class HermesMobileConnector:
                 continue
 
         raise RuntimeError(last_error or "OpenAI Realtime session creation failed.")
+
+    def _build_realtime_session_definition(
+        self,
+        *,
+        model: str,
+        instructions: str,
+        relay_mcp_url: str | None,
+        config: RealtimeTalkConfig,
+        transcription_language: str | None = None,
+    ) -> dict:
+        turn_detection: dict = {
+            "type": config.turn_detection_type,
+            "create_response": config.create_response,
+            "interrupt_response": config.interrupt_response,
+        }
+        if config.turn_detection_type == "semantic_vad":
+            turn_detection["eagerness"] = "medium"
+
+        transcription: dict = {"model": "gpt-4o-mini-transcribe"}
+        if transcription_language:
+            transcription["language"] = transcription_language
+
+        session_definition: dict = {
+            "type": "realtime",
+            "model": model,
+            "instructions": instructions,
+            "audio": {
+                "output": {
+                    "voice": config.voice or DEFAULT_REALTIME_VOICE,
+                },
+                "input": {
+                    "turn_detection": turn_detection,
+                    "transcription": transcription,
+                },
+            },
+        }
+        if relay_mcp_url:
+            session_definition["tools"] = [
+                {
+                    "type": "mcp",
+                    "server_label": "hermes_mobile_relay",
+                    "server_url": relay_mcp_url,
+                    "allowed_tools": ["hermes_delegate"],
+                    "require_approval": "never",
+                }
+            ]
+        return session_definition
 
     @staticmethod
     def _extract_http_error_message(response: httpx.Response) -> str:

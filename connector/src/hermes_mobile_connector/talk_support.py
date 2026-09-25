@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import base64
+from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import time
 
 from .sensor_store import SensorStore, freshness_metadata
 from .state import VoiceContextSnapshot
@@ -13,6 +17,133 @@ DEFAULT_REALTIME_MODELS = ["gpt-realtime-1.5", "gpt-realtime"]
 DEFAULT_REALTIME_VOICE = "ballad"
 VOICE_CONTEXT_MAX_CHARS = 4000
 ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-9;]*[A-Za-z]")
+
+# "GPT Realtime via Codex": the user's ChatGPT account opens an OpenAI Realtime
+# session through the Codex backend, so no OpenAI API key is required.
+CODEX_REALTIME_CALLS_URL = "https://chatgpt.com/backend-api/codex/realtime/calls"
+CODEX_REALTIME_MODEL = "gpt-realtime-1.5"
+CODEX_REALTIME_VOICE = "marin"
+CODEX_ORIGINATOR = "codex_cli_rs"
+CODEX_USER_AGENT = "codex_cli_rs/0.156.1"
+CODEX_AUTH_CLAIM = "https://api.openai.com/auth"
+
+
+@dataclass(frozen=True)
+class CodexCredentials:
+    access_token: str
+    account_id: str
+
+
+def _load_json_file(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _decode_jwt_payload(token: str) -> dict:
+    """Decode a JWT payload without verifying the signature."""
+    parts = token.split(".")
+    if len(parts) < 2:
+        return {}
+    payload = parts[1]
+    payload += "=" * (-len(payload) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(payload)
+        data = json.loads(decoded)
+    except (ValueError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _jwt_is_expired(payload: dict, *, now: float | None = None) -> bool:
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)):
+        return False
+    return exp <= (now if now is not None else time.time())
+
+
+def _account_id_from_payload(payload: dict) -> str | None:
+    claim = payload.get(CODEX_AUTH_CLAIM)
+    if not isinstance(claim, dict):
+        return None
+    account_id = claim.get("chatgpt_account_id")
+    if isinstance(account_id, str) and account_id.strip():
+        return account_id.strip()
+    return None
+
+
+def _credentials_from_hermes_auth(hermes_home: Path) -> CodexCredentials | None:
+    data = _load_json_file(hermes_home / "auth.json")
+    pool = data.get("credential_pool")
+    entries = pool.get("openai-codex") if isinstance(pool, dict) else None
+    if not isinstance(entries, list) or not entries:
+        return None
+    entry = entries[0]
+    if not isinstance(entry, dict):
+        return None
+    token = entry.get("access_token")
+    if not isinstance(token, str) or not token.strip():
+        return None
+    token = token.strip()
+    payload = _decode_jwt_payload(token)
+    if _jwt_is_expired(payload):
+        return None
+    account_id = _account_id_from_payload(payload)
+    if account_id is None:
+        candidate = entry.get("chatgpt_account_id")
+        account_id = candidate.strip() if isinstance(candidate, str) and candidate.strip() else None
+    if account_id is None:
+        return None
+    return CodexCredentials(access_token=token, account_id=account_id)
+
+
+def _credentials_from_codex_auth(codex_home: Path) -> CodexCredentials | None:
+    data = _load_json_file(codex_home / "auth.json")
+    tokens = data.get("tokens")
+    if not isinstance(tokens, dict):
+        return None
+    token = tokens.get("access_token")
+    if not isinstance(token, str) or not token.strip():
+        return None
+    token = token.strip()
+    payload = _decode_jwt_payload(token)
+    if _jwt_is_expired(payload):
+        return None
+    account_id = tokens.get("account_id")
+    if not isinstance(account_id, str) or not account_id.strip():
+        account_id = _account_id_from_payload(payload)
+    else:
+        account_id = account_id.strip()
+    if account_id is None:
+        return None
+    return CodexCredentials(access_token=token, account_id=account_id)
+
+
+def load_codex_credentials(
+    *,
+    hermes_home: str | Path | None = None,
+    codex_home: str | Path | None = None,
+) -> CodexCredentials:
+    """Return valid Codex OAuth credentials or raise a clear error.
+
+    Primary source is ``$HERMES_HOME/auth.json`` (``~/.hermes`` by default),
+    falling back to ``~/.codex/auth.json``. Expired tokens fall through to the
+    fallback. The token is never logged.
+    """
+    resolved_hermes = Path(hermes_home).expanduser() if hermes_home else resolve_hermes_home()
+    resolved_codex = Path(codex_home).expanduser() if codex_home else Path.home() / ".codex"
+
+    credentials = _credentials_from_hermes_auth(resolved_hermes)
+    if credentials is None:
+        credentials = _credentials_from_codex_auth(resolved_codex)
+    if credentials is None:
+        raise RuntimeError(
+            "No valid Codex OAuth credentials found. "
+            "Sign in with the Codex CLI or run `hermes` so $HERMES_HOME/auth.json is populated."
+        )
+    return credentials
 
 
 def utcnow_iso() -> str:
