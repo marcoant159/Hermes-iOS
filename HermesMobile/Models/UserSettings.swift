@@ -354,15 +354,9 @@ enum ChatModelChoice: String, Codable, CaseIterable, Hashable, Sendable, Identif
         case "gemini-3.8-flash", "gemini38Flash":
             self = .gemini38Flash
         default:
-            guard let choice = ChatModelChoice(rawValue: rawValue) else {
-                throw DecodingError.dataCorrupted(
-                    DecodingError.Context(
-                        codingPath: decoder.codingPath,
-                        debugDescription: "Unknown ChatModelChoice raw value: \(rawValue)"
-                    )
-                )
-            }
-            self = choice
+            // Unknown values (e.g. a model removed in a later build) must not
+            // fail decoding of the whole UserSettings blob.
+            self = ChatModelChoice(rawValue: rawValue) ?? .hermesDefault
         }
     }
 
