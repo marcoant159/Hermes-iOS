@@ -41,7 +41,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     }
 
     private struct TalkBootstrap: Decodable {
-        let clientSecret: String
+        let clientSecret: String?
         let expiresAt: Date?
         let session: RealtimeSession
         let model: String?
@@ -49,6 +49,19 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         let provider: String?
         let relayMcpURL: String?
         let systemInstruction: String?
+    }
+
+    private struct TalkSessionCreateRequest: Encodable {
+        let provider: String
+    }
+
+    private struct SDPExchangeRequest: Encodable {
+        let sdp: String
+    }
+
+    private struct SDPExchangeResponse: Decodable {
+        let sdp: String
+        let callId: String?
     }
 
     private struct RealtimeSession: Decodable {
@@ -98,6 +111,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     private let apiClient: RelayAPIClient
     private let accessTokenProvider: @MainActor () async -> String?
     private let accessTokenRefresher: @MainActor () async -> String?
+    private let providerProvider: @MainActor () -> String
     private let urlSession: URLSession
     private let realtimeEventTransportOverride: ((Data) -> Bool)?
     private let eventHub = TalkSessionEventHub()
@@ -142,12 +156,14 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         apiClient: RelayAPIClient,
         accessTokenProvider: @escaping @MainActor () async -> String?,
         accessTokenRefresher: @escaping @MainActor () async -> String? = { nil },
+        providerProvider: @escaping @MainActor () -> String = { "auto" },
         urlSession: URLSession = .shared,
         realtimeEventTransportOverride: ((Data) -> Bool)? = nil
     ) {
         self.apiClient = apiClient
         self.accessTokenProvider = accessTokenProvider
         self.accessTokenRefresher = accessTokenRefresher
+        self.providerProvider = providerProvider
         self.urlSession = urlSession
         self.realtimeEventTransportOverride = realtimeEventTransportOverride
         super.init()
@@ -224,7 +240,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
                 let token = await self.accessTokenProvider()
                 return try await self.apiClient.post(
                     path: "talk/session",
-                    body: EmptyBody(),
+                    body: TalkSessionCreateRequest(provider: self.providerProvider()),
                     accessToken: token
                 )
             }
@@ -782,11 +798,19 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         audioTrack = prepared.track
         audioTrack?.isEnabled = !isMuted
 
-        let answerSDP = try await exchangeSDP(
-            localSDP: prepared.offerSDP,
-            clientSecret: bootstrap.clientSecret,
-            model: bootstrap.model
-        )
+        let answerSDP: String
+        if bootstrap.provider == "codex_realtime" {
+            answerSDP = try await exchangeRelaySDP(localSDP: prepared.offerSDP)
+        } else {
+            guard let clientSecret = bootstrap.clientSecret else {
+                throw RelayAPIClient.ClientError.requestFailed("OpenAI Realtime session is missing its client secret.")
+            }
+            answerSDP = try await exchangeSDP(
+                localSDP: prepared.offerSDP,
+                clientSecret: clientSecret,
+                model: bootstrap.model
+            )
+        }
         let answer = RTCSessionDescription(type: .answer, sdp: answerSDP)
         try await prepared.connection.setRemoteDescriptionAsync(answer)
 
@@ -827,6 +851,23 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             throw RelayAPIClient.ClientError.requestFailed(String(data: data, encoding: .utf8) ?? "OpenAI Realtime SDP exchange failed.")
         }
         return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Exchanges the SDP offer through the relay for providers that keep
+    /// credentials on the Hermes host (e.g. "GPT Realtime via Codex").
+    private func exchangeRelaySDP(localSDP: String) async throws -> String {
+        guard let voiceSessionID else {
+            throw RelayAPIClient.ClientError.requestFailed("Talk session is not available for SDP exchange.")
+        }
+        let response: SDPExchangeResponse = try await performAuthorizedRequest { [self] in
+            let token = await self.accessTokenProvider()
+            return try await self.apiClient.post(
+                path: "talk/session/\(voiceSessionID.uuidString.lowercased())/sdp",
+                body: SDPExchangeRequest(sdp: localSDP),
+                accessToken: token
+            )
+        }
+        return response.sdp
     }
     #endif
 

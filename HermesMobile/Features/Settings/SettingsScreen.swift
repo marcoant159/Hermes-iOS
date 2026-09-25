@@ -23,6 +23,7 @@ struct SettingsScreen: View {
                         environmentSection
                     }
                     preferencesSection
+                    voiceEngineSection
                     wakeWordSection
                     locationSection
                     privacySection
@@ -248,6 +249,50 @@ struct SettingsScreen: View {
                     isOn: hapticBinding
                 )
             }
+        }
+    }
+
+    // MARK: - Voice Engine
+
+    private var voiceEngineSection: some View {
+        SettingsSectionView(title: "Motor de voz") {
+            VStack(alignment: .leading, spacing: Design.Spacing.sm) {
+                ForEach(VoiceEngineChoice.allCases) { choice in
+                    Button {
+                        settingsStore.settings.voiceEngineChoice = choice
+                    } label: {
+                        HStack {
+                            Text(choice.displayName)
+                            Spacer(minLength: Design.Spacing.sm)
+                            if settingsStore.settings.voiceEngineChoice == choice {
+                                Image(systemName: "checkmark")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Design.Brand.accent)
+                            }
+                        }
+                        .font(Design.Typography.callout)
+                        .foregroundStyle(Design.Colors.foreground)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Text(voiceEngineDescription)
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var voiceEngineDescription: String {
+        switch settingsStore.settings.voiceEngineChoice {
+        case .auto:
+            return "Usa GPT Realtime (Codex) quando disponível; senão, Gemini Live."
+        case .codexRealtime:
+            return "Fala pela sua conta ChatGPT, sem chave de API."
+        case .geminiLive:
+            return "Usa o Gemini Live configurado no host Hermes."
         }
     }
 
