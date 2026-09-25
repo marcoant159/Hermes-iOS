@@ -14,9 +14,12 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import base64
 import httpx
 import json
 from dataclasses import dataclass
+from pathlib import Path
+import re
 from typing import AsyncIterator
 
 from hermes_mobile_connector.client import HermesMobileConnector
@@ -362,6 +365,102 @@ def test_handle_job_stages_attachments_then_streams(tmp_path, monkeypatch):
     assert captured["attachments"] is None  # raw data cleared after staging
     assert "vision_analyze" in captured["user_message"]
     assert "photo.jpg" in captured["user_message"]
+
+
+def test_handle_job_forwards_staged_attachment_to_api_executor(tmp_path, monkeypatch):
+    """Image jobs on the API-server runtime must reach Hermes as a staged file
+    that still exists while the executor streams, and the staging dir must be
+    removed only after the job finishes."""
+    store = ConnectorStateStore(state_dir=tmp_path / "attachment-api")
+    store.save(make_enrolled_state())
+    connector = HermesMobileConnector(state_store=store, executor=make_executor())
+
+    captured: dict = {}
+
+    class FakeAPIExecutor:
+        async def stream_message(self, *, latest_user_message, history=None, session_id=None, attachments=None):
+            captured["message"] = latest_user_message
+            captured["attachments"] = attachments
+            match = re.search(r"available at (.+?)\. If you need", latest_user_message)
+            captured["staged_path"] = match.group(1) if match else None
+            captured["exists_during_stream"] = (
+                Path(captured["staged_path"]).exists() if captured["staged_path"] else False
+            )
+            yield StreamEvent(type="tool_activity", label="vision_analyze")
+            yield StreamEvent(type="text_delta", data="It is a cat.")
+            yield StreamEvent(type="finish", session_id="sess-image")
+
+    adapter = HermesAPIRuntimeAdapter(FakeAPIExecutor())
+
+    async def fake_runtime_adapter_async(state):  # noqa: ANN001
+        return adapter
+
+    monkeypatch.setattr(connector, "runtime_adapter_for_state_async", fake_runtime_adapter_async)
+
+    job = {
+        "id": "job-image",
+        "latestUserMessage": "",
+        "history": [],
+        "attachments": [
+            {
+                "type": "image",
+                "filename": "photo.jpg",
+                "mimeType": "image/jpeg",
+                "data": base64.b64encode(b"jpeg-bytes").decode(),
+            }
+        ],
+    }
+
+    ws = FakeWebSocket()
+    asyncio.run(connector._handle_job(ws, job))  # noqa: SLF001
+
+    assert captured["exists_during_stream"] is True  # not deleted before Hermes reads it
+    assert captured["staged_path"].endswith("photo.jpg")
+    assert captured["attachments"] is None  # API server drops multipart, so path is used
+    assert "vision_analyze" in captured["message"]
+    result = next(m for m in ws.sent if m["type"] == "job.result")
+    assert result["text"] == "It is a cat."
+    assert result["sessionId"] == "sess-image"
+    assert not (store.state_dir / "attachment_staging" / "job-image").exists()
+
+
+def test_handle_job_staging_failure_sends_job_failed(tmp_path, monkeypatch):
+    """A failure while staging an attachment must surface as job.failed instead
+    of leaving the job hanging with no reply."""
+    store = ConnectorStateStore(state_dir=tmp_path / "attachment-fail")
+    store.save(make_enrolled_state())
+    connector = HermesMobileConnector(state_store=store, executor=make_executor())
+
+    def boom(*, job_id, attachments):  # noqa: ANN001
+        raise OSError("No space left on device")
+
+    async def fake_runtime_adapter_async(state):  # noqa: ANN001
+        raise AssertionError("runtime selection must not run after staging fails")
+
+    monkeypatch.setattr(connector, "_build_cli_attachment_context", boom)
+    monkeypatch.setattr(connector, "runtime_adapter_for_state_async", fake_runtime_adapter_async)
+
+    job = {
+        "id": "job-staging-fail",
+        "latestUserMessage": "What is in this image?",
+        "history": [],
+        "attachments": [
+            {
+                "type": "image",
+                "filename": "photo.jpg",
+                "mimeType": "image/jpeg",
+                "data": "aGVsbG8=",
+            }
+        ],
+    }
+
+    ws = FakeWebSocket()
+    asyncio.run(connector._handle_job(ws, job))  # noqa: SLF001
+
+    assert len(ws.sent) == 1
+    assert ws.sent[0]["type"] == "job.failed"
+    assert "No space left" in ws.sent[0]["error"]
+    assert ws.sent[0]["retryable"] is True
 
 
 # --------------------------------------------------------------------------
