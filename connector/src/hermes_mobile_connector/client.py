@@ -1026,7 +1026,7 @@ class HermesMobileConnector:
             elif method == "talk.session.end":
                 result = self._rpc_talk_session_end(params)
             elif method == "talk.sdp.exchange":
-                result = self._rpc_talk_sdp_exchange(params)
+                result = await asyncio.to_thread(self._rpc_talk_sdp_exchange, params)
             elif method in {"talk.delegate", "talk.hermes_delegate"}:
                 result = await self._rpc_talk_delegate(params)
             elif method == "commands.catalog":
