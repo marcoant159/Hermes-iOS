@@ -259,6 +259,10 @@ class HermesMobileConnector:
         self._voice_delegate_sessions: dict[str, str] = {}
         self._health_cache: tuple[float, HostRuntimeAdapter | None] = (0.0, None)
         self._HEALTH_CACHE_TTL: float = 30.0
+        # Jobs still run one at a time, but off the receive loop so RPCs
+        # (talk.session.create, prewarm) are not stuck behind a long job.
+        self._job_lock = asyncio.Lock()
+        self._background_tasks: set[asyncio.Task] = set()
 
     @property
     def sensor_store(self) -> SensorStore:
@@ -616,10 +620,10 @@ class HermesMobileConnector:
                 message = json.loads(raw_message)
                 message_type = message.get("type")
                 if message_type == "job.execute":
-                    await self._handle_job(websocket, message["job"])
+                    self._spawn(self._handle_job_serialized(websocket, message["job"]))
                     continue
                 if message_type == "rpc.request":
-                    await websocket.send(json.dumps(await self._handle_rpc_request(message)))
+                    self._spawn(self._reply_rpc(websocket, message))
                     continue
                 if message_type == "ready":
                     continue
@@ -685,6 +689,24 @@ class HermesMobileConnector:
                     "error": str(error),
                 }
         return None
+
+    def _spawn(self, coro) -> None:
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _handle_job_serialized(self, websocket, job: dict) -> None:
+        async with self._job_lock:
+            try:
+                await self._handle_job(websocket, job)
+            except Exception:  # noqa: BLE001
+                logger.exception("Job %s failed outside its own error handling", job.get("id"))
+
+    async def _reply_rpc(self, websocket, message: dict) -> None:
+        try:
+            await websocket.send(json.dumps(await self._handle_rpc_request(message)))
+        except Exception:  # noqa: BLE001
+            logger.exception("RPC %s failed to send its response", message.get("method"))
 
     async def _handle_job(self, websocket, job: dict) -> None:
         state = self.state_store.load()
