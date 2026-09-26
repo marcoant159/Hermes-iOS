@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, conlist, field_validator, model_validator
 
 
 # Model overrides the mobile app may request (format "provider/model").
@@ -170,7 +170,10 @@ class SensorHealthSample(BaseModel):
 
 
 class SensorHealthRequest(BaseModel):
-    samples: list[SensorHealthSample] = Field(min_length=1, max_length=100)
+    # `conlist` bounds the *input* item count. Using `list[...] = Field(max_length=100)`
+    # with a nested model makes Pydantic 2.13 require exactly 100 items after
+    # validation, which rejected every realistic app payload (e.g. 12 metrics).
+    samples: conlist(SensorHealthSample, min_length=1, max_length=100)
 
 
 class VoiceTurnCreateRequest(BaseModel):
