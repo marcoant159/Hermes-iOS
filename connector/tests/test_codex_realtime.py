@@ -131,7 +131,7 @@ def test_load_codex_credentials_raises_when_nothing_is_valid(tmp_path):
         load_codex_credentials(hermes_home=hermes_home, codex_home=tmp_path / "codex")
 
 
-def test_talk_readiness_prefers_codex_over_gemini(monkeypatch, tmp_path, codex_credentials):
+def test_talk_readiness_prefers_codex_live_over_gemini(monkeypatch, tmp_path, codex_credentials):
     connector, _ = make_connector(tmp_path, "connector-readiness")
     monkeypatch.setenv("GOOGLE_API_KEY", "google-key-fixture")
     monkeypatch.setattr(
@@ -141,14 +141,14 @@ def test_talk_readiness_prefers_codex_over_gemini(monkeypatch, tmp_path, codex_c
 
     payload = connector.talk_readiness_payload()
 
-    assert payload["provider"] == "codex_realtime"
+    assert payload["provider"] == "codex_live"
     assert payload["configured"] is True
-    assert payload["selectedModel"] == CODEX_REALTIME_MODEL
-    assert payload["voice"] == CODEX_REALTIME_VOICE
+    assert payload["selectedModel"] == "gpt-live-1-codex"
+    assert payload["voice"] == "cove"
     assert payload["blockedReason"] is None
 
 
-def test_talk_session_create_prefers_codex_and_stores_definition(
+def test_talk_session_create_codex_realtime_stores_definition(
     monkeypatch, tmp_path, codex_credentials
 ):
     connector, store = make_connector(tmp_path, "connector-codex-session")
@@ -165,7 +165,7 @@ def test_talk_session_create_prefers_codex_and_stores_definition(
         {
             "voiceSessionId": "voice-1",
             "relayMcpURL": "https://relay.example.com/v1/talk/mcp?token=test",
-            "provider": "auto",
+            "provider": "codex_realtime",
         }
     )
 
