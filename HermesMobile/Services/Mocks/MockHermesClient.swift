@@ -94,6 +94,9 @@ final class MockHermesClient: HermesClientProtocol {
     }
 
     func loadConversation() async -> Conversation {
+        if let currentConversation {
+            return currentConversation
+        }
         let conversation = DemoData.sampleConversation
         currentConversation = conversation
         return conversation

@@ -45,7 +45,53 @@ final class ResilientHermesClient: HermesClientProtocol {
     }
 
     func sendStreaming(message: String, attachments: [PendingAttachment] = [], clientMessageID: UUID) -> AsyncStream<StreamingUpdate> {
-        primary.sendStreaming(message: message, attachments: attachments, clientMessageID: clientMessageID)
+        let primaryStream = primary.sendStreaming(message: message, attachments: attachments, clientMessageID: clientMessageID)
+        guard allowsFallback() else { return primaryStream }
+
+        return AsyncStream { continuation in
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    continuation.finish()
+                    return
+                }
+
+                var sawOutput = false
+                var primaryFailure: String?
+
+                for await update in primaryStream {
+                    if case .failed(let failure) = update {
+                        // Nothing useful was streamed yet: hold the failure so we can
+                        // try the fallback first (mirrors `send`, `connect`, `loadConversation`).
+                        if sawOutput {
+                            continuation.yield(.failed(failure))
+                            continuation.finish()
+                            return
+                        }
+                        primaryFailure = failure
+                        break
+                    }
+                    sawOutput = true
+                    continuation.yield(update)
+                }
+
+                if let primaryFailure {
+                    guard self.allowsFallback() else {
+                        continuation.yield(.failed(primaryFailure))
+                        continuation.finish()
+                        return
+                    }
+                    for await update in self.fallback.sendStreaming(
+                        message: message,
+                        attachments: attachments,
+                        clientMessageID: clientMessageID
+                    ) {
+                        continuation.yield(update)
+                    }
+                }
+
+                continuation.finish()
+            }
+        }
     }
 
     func loadConversation() async -> Conversation {
