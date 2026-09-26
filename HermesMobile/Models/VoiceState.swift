@@ -134,6 +134,9 @@ struct TalkSessionSnapshot: Hashable, Sendable {
     var canStartSession: Bool
     var latencyMetrics: TalkLatencyMetrics
     var voiceSessionID: UUID?
+    /// `true` while an async Hermes delegation is still being polled. Used to
+    /// show "Consultando o Hermes" and to hold off the idle auto-close.
+    var isDelegationInProgress: Bool = false
 }
 
 enum TalkSessionEvent: Hashable, Sendable {

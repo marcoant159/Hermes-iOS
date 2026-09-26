@@ -251,14 +251,17 @@ final class AppContainer {
         container.chatStore.onConversationChanged = { [weak container] in
             container?.updateWidgetData()
         }
-        // Hands-free "hey hermes": spoken commands go through the normal chat pipeline
-        // and the assistant reply is spoken back by the wake word service.
-        container.wakeWordService.onCommand = { [weak container] command in
+        // Hands-free "oi hermes": open the GPT Live voice session and inject the
+        // same-utterance command (if any) straight into it. The session owns the
+        // microphone, so the wake listener stays suspended until it ends.
+        container.wakeWordService.onWakeActivation = { [weak container] command in
             guard let container else { return }
-            await container.chatStore.sendMessage(command)
-        }
-        container.chatStore.onAssistantReplyFinished = { [weak container] content in
-            container?.wakeWordService.handleAssistantReply(content)
+            await container.talkStore.startWakeWordSession(
+                providerOverride: container.wakeWordVoiceProviderOverride()
+            )
+            if let command, !command.isEmpty {
+                await container.talkStore.injectSpokenCommand(command)
+            }
         }
         container.talkStore.onSessionStateChanged = { [weak container] in
             guard let container else { return }
@@ -356,6 +359,13 @@ final class AppContainer {
         await startWakeWordIfEnabled()
         reconcileLiveActivities()
         await reportAppStateIfNeeded("foreground")
+    }
+
+    /// Wake-word sessions always force `codex_live`: the injected
+    /// `session.context.append` delegation flow is only validated there. This
+    /// matches the configured engine when it is "auto" or "GPT Live (Codex)".
+    private func wakeWordVoiceProviderOverride() -> String {
+        VoiceEngineChoice.codexLive.providerValue
     }
 
     /// Arms the hands-free wake word listener when the user enabled it.

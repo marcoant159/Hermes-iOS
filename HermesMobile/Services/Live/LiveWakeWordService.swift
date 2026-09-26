@@ -1,3 +1,4 @@
+import AudioToolbox
 @preconcurrency import AVFoundation
 import Foundation
 import OSLog
@@ -20,21 +21,21 @@ enum WakeWordError: LocalizedError {
     }
 }
 
-/// Hands-free wake word ("hey hermes" / "oi hermes") + voice commands for the chat.
+/// Hands-free wake word ("oi hermes") that opens the GPT Live voice session.
 ///
 /// Built on the same on-device iOS 26 Speech stack as `LiveSpeechService`
 /// (dictation) — `DictationTranscriber` + `SpeechAnalyzer` — but the analyzer stays
 /// armed instead of stopping at the first final result:
 ///
-/// 1. every partial transcript is scanned for the wake phrase;
-/// 2. once heard, whatever follows becomes the command;
-/// 3. after a short silence the command is handed to `onCommand`, which the caller
-///    sends through the normal chat pipeline;
-/// 4. the assistant's reply is spoken with the system voice, then listening resumes.
+/// 1. every partial transcript is scanned for the wake phrase ("oi hermes");
+/// 2. once heard, a short confirmation beep plays;
+/// 3. whatever follows in the same utterance is captured as the command;
+/// 4. after a short silence the microphone is handed over (`onWakeActivation`),
+///    which starts a GPT Live voice session; the same-utterance command (if any)
+///    is injected into that session by the caller.
 ///
-/// The microphone is released while Hermes thinks/speaks, so the app never
-/// transcribes its own voice. The `audio` background mode declared in the project
-/// keeps the listener alive while the app is not frontmost.
+/// The `audio` background mode declared in the project keeps the listener alive
+/// while the app is not frontmost, and the session can start without any UI.
 @MainActor
 @Observable
 final class LiveWakeWordService {
@@ -63,25 +64,25 @@ final class LiveWakeWordService {
 
     // MARK: - Tuning
 
-    /// Silence after the last recognized word that closes the command.
+    /// Silence after the last recognized word that closes the wake activation.
+    /// A bare "oi hermes" also opens the session after this window.
     private static let silenceToFinishCommand: TimeInterval = 1.6
-    /// How long to wait for a command to *start* after the wake phrase.
-    private static let silenceBeforeCommand: TimeInterval = 5
     /// Hard cap for a single spoken command.
     private static let maxCommandSeconds: TimeInterval = 20
-    /// Grace period after the reply before the mic goes live again.
-    private static let cooldownAfterCommand: TimeInterval = 1.2
     /// Ignore transcripts for this long after resuming (own-speech tail).
     private static let resumeSuppression: TimeInterval = 1.0
-    /// Give up waiting for the assistant reply and listen again.
-    private static let replyTimeout: TimeInterval = 90
-    /// Shortest accepted command.
+    /// Shortest accepted same-utterance command.
     private static let minimumCommandLength = 2
     /// Retry delay after a listener failure.
     private static let failureRetryDelay: TimeInterval = 3
+    /// Short system sound played to confirm the wake phrase.
+    private static let activationSoundID: SystemSoundID = 1113
 
-    /// Words that may precede "hermes" to form the wake phrase.
-    nonisolated private static let wakePrefixes: Set<String> = ["hey", "hei", "oi", "ei", "ola", "ok", "okay", "opa"]
+    /// The only wake phrase is "oi hermes" (plus the common on-device
+    /// transcription variant "oi ermes"). Case/accent/punctuation insensitive.
+    nonisolated private static let wakeWord = "hermes"
+    nonisolated private static let wakeWordVariant = "ermes"
+    nonisolated private static let wakeGreeting = "oi"
 
     // MARK: - Observable state
 
@@ -96,18 +97,17 @@ final class LiveWakeWordService {
     /// state, so the UI uses this to avoid showing "Starting…".
     var isSuspendedForExternalCapture: Bool { isSuspended }
 
-    /// Called with the spoken command (already stripped of the wake phrase).
-    /// Async so the caller can push it through the chat pipeline before the
-    /// service continues (the reply is spoken back later).
-    var onCommand: (@MainActor (String) async -> Void)?
+    /// Called once the wake phrase (and any same-utterance command) is ready.
+    /// The caller starts a GPT Live voice session and injects `command` when it
+    /// is non-nil. Async so the microphone is handed over before the callback
+    /// runs, and so the caller can complete the session bootstrap in order.
+    var onWakeActivation: (@MainActor (String?) async -> Void)?
 
     // MARK: - Internals
 
     private let listener = WakeListener()
-    private let announcer = SpeechAnnouncer()
     private var eventTask: Task<Void, Never>?
     private var silenceTask: Task<Void, Never>?
-    private var replyTimeoutTask: Task<Void, Never>?
     private var isRunning = false
 
     private var isSuspended = false
@@ -168,9 +168,6 @@ final class LiveWakeWordService {
         eventTask = nil
         silenceTask?.cancel()
         silenceTask = nil
-        replyTimeoutTask?.cancel()
-        replyTimeoutTask = nil
-        announcer.stop()
         await listener.stop()
         phase = .off
         Self.logger.info("wake word listener stopped")
@@ -189,8 +186,6 @@ final class LiveWakeWordService {
         guard isRunning, !isSuspended else { return }
         isSuspended = true
         resetCapture()
-        replyTimeoutTask?.cancel()
-        replyTimeoutTask = nil
         await listener.pause()
         phase = .off
         Self.logger.info("wake word suspended for external capture")
@@ -206,21 +201,6 @@ final class LiveWakeWordService {
         await listener.resume()
         suppressUntil = Date().addingTimeInterval(Self.resumeSuppression)
         phase = .listening
-    }
-
-    // MARK: - Reply handling
-
-    /// Called with the assistant's final message content for a streamed reply.
-    func handleAssistantReply(_ text: String) {
-        guard phase == .thinking else { return }
-        replyTimeoutTask?.cancel()
-        replyTimeoutTask = nil
-        phase = .speaking
-        Task { [weak self] in
-            guard let self else { return }
-            await self.announcer.speak(text)
-            await self.resumeListening(after: Self.cooldownAfterCommand)
-        }
     }
 
     // MARK: - Listener plumbing
@@ -270,6 +250,7 @@ final class LiveWakeWordService {
             captureStartedAt = Date()
             lastTextAt = Date()
             phase = .capturing
+            Self.playActivationSound()
             Self.logger.info("wake phrase detected")
             return
         }
@@ -303,11 +284,9 @@ final class LiveWakeWordService {
         guard isRunning, capturing else { return }
         let idle = Date().timeIntervalSince(lastTextAt)
         let elapsed = Date().timeIntervalSince(captureStartedAt)
-        // Right after the wake phrase the user may pause ("oi hermes… <pausa> …comando"),
-        // so an empty command gets a longer grace period than one already in progress.
-        let pending = Self.join(committedCommand, currentSegmentText)
-        let idleLimit = pending.isEmpty ? Self.silenceBeforeCommand : Self.silenceToFinishCommand
-        if idle >= idleLimit || elapsed >= Self.maxCommandSeconds {
+        // A bare "oi hermes" opens the session after the same short silence used
+        // to close a command, so the user can just start talking to GPT Live.
+        if idle >= Self.silenceToFinishCommand || elapsed >= Self.maxCommandSeconds {
             await finalizeCommand()
         }
     }
@@ -317,41 +296,20 @@ final class LiveWakeWordService {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         resetCapture()
 
-        guard command.count >= Self.minimumCommandLength else {
-            // False trigger: keep listening.
-            phase = .listening
-            return
-        }
-
-        lastCommand = command
+        // A bare "oi hermes" is a valid activation (case a): the GPT Live
+        // session opens and the user speaks the question there.
+        let payload = command.count >= Self.minimumCommandLength ? command : nil
+        lastCommand = payload
         phase = .thinking
-        // Release the mic before the agent works (and before the reply is spoken).
-        await listener.pause()
-        Self.logger.info("wake command dispatched (\(command.count, privacy: .public) chars)")
-        await onCommand?(command)
-        armReplyTimeout()
+        // Release the mic before the external voice session takes over.
+        await suspendForExternalCapture()
+        let commandState = payload == nil ? "none" : "present"
+        Self.logger.info("wake activation dispatched (command: \(commandState, privacy: .public))")
+        await onWakeActivation?(payload)
     }
 
-    private func armReplyTimeout() {
-        replyTimeoutTask?.cancel()
-        replyTimeoutTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(Self.replyTimeout))
-            guard let self else { return }
-            guard self.phase == .thinking else { return }
-            Self.logger.error("no assistant reply for wake command — listening again")
-            await self.resumeListening(after: 0)
-        }
-    }
-
-    private func resumeListening(after delay: TimeInterval) async {
-        guard isRunning else { return }
-        if delay > 0 {
-            try? await Task.sleep(for: .seconds(delay))
-        }
-        guard isRunning else { return }
-        await listener.resume()
-        suppressUntil = Date().addingTimeInterval(Self.resumeSuppression)
-        phase = .listening
+    private static func playActivationSound() {
+        AudioServicesPlaySystemSound(activationSoundID)
     }
 
     private func resetCapture() {
@@ -391,27 +349,42 @@ final class LiveWakeWordService {
     /// Returns the command text that follows the wake phrase, or `nil` when the
     /// transcript is not addressed to the wake word.
     ///
-    /// Matches "hermes" (case/accent-insensitive) when it either starts the
-    /// utterance or is preceded by a wake prefix ("hey", "oi", "ei", …). A bare
-    /// mention inside a sentence ("o hermes respondeu…") never triggers.
+    /// The only accepted phrase is "oi hermes" (case/accent/punctuation
+    /// insensitive), plus the common on-device transcription variant
+    /// "oi ermes". A bare "hermes" or a mention inside a sentence never triggers.
     nonisolated static func commandAfterTrigger(in text: String) -> String? {
-        guard let range = text.range(of: "hermes", options: [.caseInsensitive, .diacriticInsensitive]) else {
-            return nil
+        let tokens = words(in: text)
+        for index in tokens.indices {
+            guard tokens[index].folded == wakeGreeting else { continue }
+            let nextIndex = tokens.index(after: index)
+            guard nextIndex < tokens.endIndex else { continue }
+            let word = tokens[nextIndex]
+            guard word.folded == wakeWord || word.folded == wakeWordVariant else { continue }
+            return trimLeadingPunctuation(String(text[word.range.upperBound...]))
         }
+        return nil
+    }
 
-        let before = String(text[text.startIndex..<range.lowerBound])
-        let after = String(text[range.upperBound...])
-        let wordsBefore = before
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
-
-        let hasPrefix = wordsBefore.last.map { word in
-            wakePrefixes.contains(fold(word))
-        } ?? false
-        let startsUtterance = wordsBefore.isEmpty
-        guard hasPrefix || startsUtterance else { return nil }
-
-        return trimLeadingPunctuation(after)
+    /// Splits `text` into alphanumeric runs, folding each to lower-case without
+    /// diacritics so punctuation, accents, and case are ignored.
+    private nonisolated static func words(
+        in text: String
+    ) -> [(folded: String, range: Range<String.Index>)] {
+        var tokens: [(folded: String, range: Range<String.Index>)] = []
+        var index = text.startIndex
+        while index < text.endIndex {
+            while index < text.endIndex, !text[index].isLetter, !text[index].isNumber {
+                index = text.index(after: index)
+            }
+            guard index < text.endIndex else { break }
+            let start = index
+            while index < text.endIndex, text[index].isLetter || text[index].isNumber {
+                index = text.index(after: index)
+            }
+            let range = start..<index
+            tokens.append((folded: fold(String(text[range])), range: range))
+        }
+        return tokens
     }
 
     private nonisolated static func fold(_ word: String) -> String {
@@ -432,75 +405,6 @@ final class LiveWakeWordService {
         if left.isEmpty { return right }
         if right.isEmpty { return left }
         return left + " " + right
-    }
-}
-
-// MARK: - Spoken replies
-
-/// Speaks the assistant's reply with the system voice.
-///
-/// `AVSpeechSynthesizer` has no async completion, so playback is tracked by
-/// polling `isSpeaking` (delegate callbacks would add an isolation headache for
-/// no benefit here).
-@MainActor
-final class SpeechAnnouncer {
-    private let synthesizer = AVSpeechSynthesizer()
-    private static let maxSpeechSeconds: TimeInterval = 600
-
-    func speak(_ text: String) async {
-        let spoken = Self.speechFriendly(text)
-        guard !spoken.isEmpty else { return }
-
-        let utterance = AVSpeechUtterance(string: spoken)
-        utterance.voice = Self.preferredVoice()
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
-        utterance.postUtteranceDelay = 0.2
-        synthesizer.speak(utterance)
-
-        // Give the synthesizer a moment to start before trusting `isSpeaking`.
-        try? await Task.sleep(for: .milliseconds(400))
-        var waited: TimeInterval = 0
-        while synthesizer.isSpeaking, waited < Self.maxSpeechSeconds {
-            try? await Task.sleep(for: .milliseconds(200))
-            waited += 0.2
-        }
-    }
-
-    func stop() {
-        if synthesizer.isSpeaking {
-            synthesizer.stopSpeaking(at: .immediate)
-        }
-    }
-
-    private static func preferredVoice() -> AVSpeechSynthesisVoice? {
-        if let portuguese = AVSpeechSynthesisVoice(language: "pt-BR") {
-            return portuguese
-        }
-        let language = Locale.current.language.languageCode?.identifier ?? "en"
-        return AVSpeechSynthesisVoice(language: language)
-    }
-
-    /// Strips markdown/MEDIA noise so the reply reads well out loud.
-    nonisolated static func speechFriendly(_ text: String) -> String {
-        var output = text
-        output = output.replacingOccurrences(
-            of: "```[\\s\\S]*?```",
-            with: " (bloco de código omitido) ",
-            options: .regularExpression
-        )
-        output = output.replacingOccurrences(of: "`([^`]*)`", with: "$1", options: .regularExpression)
-        output = output.replacingOccurrences(of: "!\\[[^\\]]*\\]\\([^)]*\\)", with: "", options: .regularExpression)
-        output = output.replacingOccurrences(of: "\\[([^\\]]*)\\]\\([^)]*\\)", with: "$1", options: .regularExpression)
-        output = output.replacingOccurrences(of: "(?m)^\\s*#{1,6}\\s*", with: "", options: .regularExpression)
-        output = output.replacingOccurrences(of: "(?m)^\\s*[-*+]\\s+", with: "", options: .regularExpression)
-        output = output.replacingOccurrences(of: "MEDIA:\\s*\\S+", with: "", options: .regularExpression)
-        output = output.replacingOccurrences(of: "[*_~>#|]", with: "", options: .regularExpression)
-        output = output.replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
-        output = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        if output.count > 1200 {
-            output = String(output.prefix(1200)) + "…"
-        }
-        return output
     }
 }
 

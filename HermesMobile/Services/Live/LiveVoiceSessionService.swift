@@ -119,7 +119,8 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             statusMessage: statusMessage,
             canStartSession: canStartSession,
             latencyMetrics: latencyMetrics,
-            voiceSessionID: voiceSessionID
+            voiceSessionID: voiceSessionID,
+            isDelegationInProgress: !delegationPollingTasks.isEmpty
         )
     }
 
@@ -156,6 +157,8 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     private var hermesRelayMcpURL: String?
     private var delegationPollingTasks: [String: Task<Void, Never>] = [:]
     private var activeProvider: String?
+    /// Set once the codex_live server acknowledges `session.started`.
+    private var codexLiveSessionStarted = false
     private var geminiInputTranscript = ""
     private var geminiAssistantTranscript = ""
     private var geminiIgnoreCurrentAudio = false
@@ -228,8 +231,13 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     }
 
     func startSession() async {
+        await startSession(providerOverride: nil)
+    }
+
+    func startSession(providerOverride: String?) async {
         latencyMetrics = TalkLatencyMetrics(sessionStartRequestedAt: .now)
         isEndingSession = false
+        codexLiveSessionStarted = false
         // Skip readiness check — already done by VoiceOverlayScreen.task before
         // calling startSession. Removing it saves one HTTP round trip + RPC.
         guard canStartSession else { return }
@@ -257,7 +265,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
                 let token = await self.accessTokenProvider()
                 return try await self.apiClient.post(
                     path: "talk/session",
-                    body: TalkSessionCreateRequest(provider: self.providerProvider()),
+                    body: TalkSessionCreateRequest(provider: self.resolvedProvider(override: providerOverride)),
                     accessToken: token
                 )
             }
@@ -303,6 +311,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         stopTimer()
         startedAt = nil
         isEndingSession = true
+        codexLiveSessionStarted = false
         for delegationTask in delegationPollingTasks.values {
             delegationTask.cancel()
         }
@@ -451,6 +460,15 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             }
             return try await operation()
         }
+    }
+
+    /// Resolves the provider to request from the relay. The wake word passes
+    /// `codex_live`; other callers keep the configured engine.
+    private func resolvedProvider(override: String?) -> String {
+        guard let override, !override.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return providerProvider()
+        }
+        return override
     }
 
     private func friendlyStatusMessage(for error: Error) -> String {
@@ -804,7 +822,11 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
 
     private func handleCodexLiveEvent(type: String, payload: [String: Any]) {
         switch type {
-        case "session.started", "session.updated":
+        case "session.started":
+            codexLiveSessionStarted = true
+            voiceState = .listening
+            statusMessage = "Listening"
+        case "session.updated":
             voiceState = .listening
             statusMessage = "Listening"
         case "input_transcript.added":
@@ -869,7 +891,10 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         statusMessage = "Hermes is working on that\u{2026}"
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.delegationPollingTasks[itemID] = nil }
+            defer {
+                self.delegationPollingTasks[itemID] = nil
+                self.publishSnapshot()
+            }
             do {
                 let delegationID = try await self.startHermesDelegation(prompt: prompt)
                 self.sendDelegationContext(
@@ -895,6 +920,84 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             }
         }
         delegationPollingTasks[itemID] = task
+        publishSnapshot()
+    }
+
+    // MARK: - Wake word injection
+
+    /// Injects a command captured by the on-device wake word listener into the
+    /// live session. The wake audio never reached the server, so this pushes it
+    /// as speakable context and starts the async Hermes delegation itself.
+    func injectSpokenCommand(_ command: String) async {
+        let prompt = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { return }
+        guard await waitForCodexLiveSession() else {
+            Self.logger.error("injectSpokenCommand: codex_live session never became ready")
+            return
+        }
+        guard !isEndingSession else { return }
+        sendSessionContextAppend(
+            "O Marco acabou de perguntar em voz alta: \"\(prompt)\". "
+            + "Diga a ele, em uma frase curta, que você está consultando o Hermes."
+        )
+        startInjectedDelegation(prompt: prompt)
+    }
+
+    /// Waits (bounded) for the codex_live `session.started` event. Datachannel
+    /// open and `session.started` are not the same moment; the server rejects
+    /// context before its session is ready.
+    private func waitForCodexLiveSession(timeout: TimeInterval = 20) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if isEndingSession { return false }
+            if codexLiveSessionStarted, activeProvider == "codex_live" { return true }
+            if connectionState == .failed || connectionState == .blocked { return false }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return false
+    }
+
+    /// Starts a Hermes delegation for a wake-word command. Unlike the server
+    /// delegation path there is no `delegation_item_id`, so results come back
+    /// through `session.context.append`.
+    private func startInjectedDelegation(prompt: String) {
+        let taskKey = "wake-\(UUID().uuidString)"
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.delegationPollingTasks[taskKey] = nil
+                self.publishSnapshot()
+            }
+            do {
+                let delegationID = try await self.startHermesDelegation(prompt: prompt)
+                let responseText = try await self.pollHermesDelegation(
+                    delegationID: delegationID,
+                    itemID: nil
+                )
+                guard !self.isEndingSession else { return }
+                self.sendSessionContextAppend(
+                    "Resultado do Hermes para a pergunta do Marco: \(responseText). "
+                    + "Transmita isso a ele agora, de forma natural e breve."
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !self.isEndingSession else { return }
+                self.sendSessionContextAppend(self.delegationFailureMessage(for: error))
+            }
+        }
+        delegationPollingTasks[taskKey] = task
+        publishSnapshot()
+    }
+
+    private func sendSessionContextAppend(_ text: String) {
+        _ = sendRealtimeEvent([
+            "type": "session.context.append",
+            "channel": "speakable",
+            "content": [
+                ["type": "input_text", "text": text] as [String: Any]
+            ],
+        ])
     }
 
     /// Starts an async Hermes delegation on the relay and returns its id.
@@ -917,7 +1020,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     /// Polls the delegation status every 2 s for up to 10 minutes without
     /// blocking the realtime loop, nudging the model with short commentary
     /// lines while it waits.
-    private func pollHermesDelegation(delegationID: String, itemID: String) async throws -> String {
+    private func pollHermesDelegation(delegationID: String, itemID: String?) async throws -> String {
         guard let voiceSessionID else {
             throw RelayAPIClient.ClientError.requestFailed("Hermes tool delegation is unavailable.")
         }
@@ -937,7 +1040,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             case "failed":
                 throw RelayAPIClient.ClientError.requestFailed("Não foi possível concluir a consulta ao Hermes.")
             default:
-                if Date().timeIntervalSince(lastCommentaryAt) >= 45 {
+                if let itemID, Date().timeIntervalSince(lastCommentaryAt) >= 45 {
                     lastCommentaryAt = Date()
                     sendDelegationContext(
                         itemID: itemID,

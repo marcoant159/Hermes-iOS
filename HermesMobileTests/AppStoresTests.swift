@@ -273,6 +273,12 @@ struct AppStoresTests {
 
         func startSession() async {}
 
+        func startSession(providerOverride: String?) async {}
+
+        func injectSpokenCommand(_ command: String) async {
+            emitAssistantTurn(command)
+        }
+
         func endSession() async {
             voiceState = .idle
             connectionState = .idle

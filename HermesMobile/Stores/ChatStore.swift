@@ -35,9 +35,6 @@ final class ChatStore {
     /// Called when conversation content changes (new message, streaming complete).
     /// Used by AppContainer to push widget data updates.
     var onConversationChanged: (@MainActor () -> Void)?
-    /// Called with the assistant's final content once a streamed reply completes.
-    /// Used by the wake word service to speak replies to hands-free commands.
-    var onAssistantReplyFinished: (@MainActor (String) -> Void)?
 
     init(hermesClient: any HermesClientProtocol, persistence: any AppPersistenceStoreProtocol) {
         self.hermesClient = hermesClient
@@ -175,8 +172,6 @@ final class ChatStore {
                     self.streamingMessageID = nil
                     self.pendingMessageSentAt = nil
                     self.chatLiveActivity.endActivity()
-                    // Hands-free flow: the wake word service speaks this reply aloud.
-                    self.onAssistantReplyFinished?(finalMessage.content)
 
                 case .failed(let errorMessage):
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {

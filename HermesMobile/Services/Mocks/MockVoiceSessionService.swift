@@ -39,6 +39,10 @@ final class MockVoiceSessionService: VoiceSessionServiceProtocol {
     func refreshReadiness() async {}
 
     func startSession() async {
+        await startSession(providerOverride: nil)
+    }
+
+    func startSession(providerOverride: String?) async {
         latencyMetrics = TalkLatencyMetrics(sessionStartRequestedAt: .now)
         connectionState = .connected
         voiceState = .listening
@@ -109,6 +113,12 @@ final class MockVoiceSessionService: VoiceSessionServiceProtocol {
     @discardableResult
     func sendImage(_ imageData: Data, mimeType: String = "image/jpeg", triggerResponse: Bool = true) -> Bool {
         return true
+    }
+
+    func injectSpokenCommand(_ command: String) async {
+        let prompt = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { return }
+        transcriptItems.append(TranscriptItem(speaker: .user, text: prompt, isPartial: false))
     }
 
     private func publishSnapshot() {
