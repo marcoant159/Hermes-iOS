@@ -216,6 +216,11 @@ from .talk_support import (
 OPENAI_REALTIME_CLIENT_SECRETS_URL = "https://api.openai.com/v1/realtime/client_secrets"
 GEMINI_LIVE_AUTH_TOKENS_URL = "https://generativelanguage.googleapis.com/v1beta/auth_tokens"
 GEMINI_LIVE_MODEL = "gemini-3.8-live"
+VOICE_DELEGATE_PROVIDER_DEFAULT = "opencode-go"
+VOICE_DELEGATE_MODEL_DEFAULT = "deepseek-v4.1-flash"
+VOICE_DELEGATE_REASONING_DEFAULT = "low"
+VOICE_DELEGATE_RECENT_TURNS_LIMIT = 8
+
 GEMINI_LIVE_TOOLS = [{
     "functionDeclarations": [{
         "name": "hermes_delegate",
@@ -274,7 +279,6 @@ class HermesMobileConnector:
         self.heartbeat_interval_seconds = heartbeat_interval_seconds
         self.reconnect_delay_seconds = reconnect_delay_seconds
         self._sensor_store: SensorStore | None = None
-        self._voice_delegate_sessions: dict[str, str] = {}
         self._codex_realtime_sessions: dict[str, dict] = {}
         self._health_cache: tuple[float, HostRuntimeAdapter | None] = (0.0, None)
         self._HEALTH_CACHE_TTL: float = 30.0
@@ -1319,9 +1323,13 @@ class HermesMobileConnector:
         }
 
     CODEX_LIVE_DELEGATION_INSTRUCTIONS = (
-        "Quando o usuário pedir algo que exija dados, ações ou ferramentas "
-        "(fazenda, reservatórios, sensores, Inttegra, agenda, e-mail, arquivos etc.), "
-        "delegue. Fale sempre em português do Brasil, de forma breve."
+        "Responda você mesmo, sem delegar, a conversa, cumprimentos, perguntas "
+        "sobre a própria conversa, sobre o andamento de consultas e conhecimento "
+        "geral. Delegue ao Hermes SOMENTE quando precisar de dados, ferramentas ou "
+        "ações (fazenda, sensores, servidores, Inttegra, agenda, e-mail, arquivos). "
+        "Você pode continuar conversando enquanto uma consulta está em andamento; "
+        "quando o resultado chegar, diga a qual pergunta ele responde. Fale sempre "
+        "em português do Brasil, de forma breve."
     )
 
     def _create_codex_live_session(
@@ -1941,9 +1949,70 @@ class HermesMobileConnector:
     def _rpc_talk_session_end(self, params: dict) -> dict:
         voice_session_id = str(params.get("voiceSessionId") or "").strip()
         if voice_session_id:
-            self._voice_delegate_sessions.pop(voice_session_id, None)
             self._codex_realtime_sessions.pop(voice_session_id, None)
         return {"ended": True, "voiceSessionId": voice_session_id or None}
+
+    def _voice_delegate_model_config(self) -> tuple[str, str, str]:
+        """Resolve provider/model/reasoning for voice delegations from env."""
+
+        provider = (os.getenv("HERMES_VOICE_DELEGATE_PROVIDER") or VOICE_DELEGATE_PROVIDER_DEFAULT).strip()
+        model = (os.getenv("HERMES_VOICE_DELEGATE_MODEL") or VOICE_DELEGATE_MODEL_DEFAULT).strip()
+        reasoning = (os.getenv("HERMES_VOICE_DELEGATE_REASONING") or VOICE_DELEGATE_REASONING_DEFAULT).strip()
+        return provider, model, reasoning
+
+    def _voice_delegate_runtime(self, state: ConnectorState, runtime: HostRuntimeAdapter) -> HostRuntimeAdapter:
+        """Return a runtime pinned to the fast voice-delegation model.
+
+        Voice delegations always use their own model regardless of the chat
+        default. Unknown adapter types (e.g. test doubles) are returned as-is.
+        """
+
+        provider, model, reasoning = self._voice_delegate_model_config()
+        if isinstance(runtime, HermesAPIRuntimeAdapter):
+            model_options = {"reasoning_effort": reasoning} if reasoning else None
+            return HermesAPIRuntimeAdapter(
+                replace(runtime.executor, provider=provider, model=model, model_options=model_options)
+            )
+        if isinstance(runtime, HermesRuntimeAdapter):
+            settings = replace(
+                self.settings_for_state(state),
+                hermes_provider=provider,
+                hermes_model=model,
+            )
+            return HermesRuntimeAdapter(HermesCLIExecutor(settings))
+        return runtime
+
+    @staticmethod
+    def _build_voice_delegation_prompt(prompt: str, recent_turns: object) -> str:
+        """Prefix the question with recent voice turns and ask for a short reply."""
+
+        sections: list[str] = []
+        if isinstance(recent_turns, list):
+            formatted: list[str] = []
+            for turn in recent_turns[-VOICE_DELEGATE_RECENT_TURNS_LIMIT:]:
+                if not isinstance(turn, dict):
+                    continue
+                text = str(turn.get("text") or "").strip()
+                if not text:
+                    continue
+                role = str(turn.get("role") or "").strip().lower()
+                if role in {"assistant", "hermes", "voice_hermes"}:
+                    speaker = "Hermes"
+                elif role in {"user", "voice_user"}:
+                    speaker = "Usuário"
+                else:
+                    speaker = role or "Participante"
+                formatted.append(f"{speaker}: {text}")
+            if formatted:
+                sections.append(
+                    "[Conversa de voz recente]\n" + "\n".join(formatted) + "\n[Fim]"
+                )
+
+        sections.append(
+            f"Pergunta: {prompt}\n\n"
+            "Responda de forma curta e falada, em português do Brasil."
+        )
+        return "\n\n".join(sections)
 
     async def _rpc_talk_delegate(self, params: dict) -> dict:
         voice_session_id = str(params.get("voiceSessionId") or "").strip()
@@ -1953,16 +2022,19 @@ class HermesMobileConnector:
         if not prompt:
             raise RuntimeError("prompt is required.")
 
+        delegation_prompt = self._build_voice_delegation_prompt(prompt, params.get("recentTurns"))
+
+        # Each delegation is an independent Hermes execution: no session is
+        # reused across turns, so concurrent questions don't queue behind each
+        # other on the host. `asyncio.to_thread` lets them run in parallel.
         state = self.state_store.load()
         runtime = await self.runtime_adapter_for_state_async(state)
-        session_id = self._voice_delegate_sessions.get(voice_session_id)
+        runtime = self._voice_delegate_runtime(state, runtime)
         result = await asyncio.to_thread(
             runtime.delegate_talk_turn,
-            prompt=prompt,
-            session_id=session_id,
+            prompt=delegation_prompt,
+            session_id=None,
         )
-        if result.session_id:
-            self._voice_delegate_sessions[voice_session_id] = result.session_id
         return {
             "text": result.text,
             "sessionId": result.session_id,
