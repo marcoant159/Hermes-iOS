@@ -191,6 +191,10 @@ class TalkSDPExchangeRequest(BaseModel):
     sdp: str = Field(min_length=1)
 
 
+class TalkDelegationCreateRequest(BaseModel):
+    prompt: str = Field(min_length=1)
+
+
 class InternalInboxCreateRequest(BaseModel):
     userId: UUID | None = None
     deviceId: UUID | None = None

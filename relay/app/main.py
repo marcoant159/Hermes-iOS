@@ -10,6 +10,9 @@ import uuid
 
 logger = logging.getLogger("hermes.relay")
 
+# Async talk delegations are kept in memory for this long after creation.
+TALK_DELEGATION_TTL_SECONDS = 30 * 60
+
 import json
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect, status
@@ -40,6 +43,7 @@ from .schemas import (
     SensorLocationRequest,
     PushRegisterRequest,
     RefreshRequest,
+    TalkDelegationCreateRequest,
     TalkSDPExchangeRequest,
     TalkSessionCreateRequest,
     VoiceTurnCreateRequest,
@@ -228,6 +232,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.connector_rpc_waiters: dict[str, asyncio.Future[dict]] = {}
     app.state.job_event_queues: dict[str, list[asyncio.Queue]] = {}
     app.state.job_event_buffers: dict[str, list[dict]] = {}
+    app.state.talk_delegations: dict[str, dict] = {}
+    app.state.talk_delegation_tasks: set[asyncio.Task] = set()
 
     def subscribe_job_events(job_id: str) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=1024)
@@ -432,6 +438,59 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return success_response({"deliveryState": delivery_state}, status_code=status_code)
 
     app.state.send_connector_rpc = send_connector_rpc
+
+    def prune_talk_delegations() -> None:
+        """Drop in-memory delegations older than the TTL."""
+        now = datetime.now(timezone.utc)
+        expired = [
+            delegation_id
+            for delegation_id, entry in app.state.talk_delegations.items()
+            if (now - entry["createdAt"]).total_seconds() > TALK_DELEGATION_TTL_SECONDS
+        ]
+        for delegation_id in expired:
+            app.state.talk_delegations.pop(delegation_id, None)
+
+    async def run_talk_delegation(
+        *,
+        user_id: str,
+        voice_session_id: str,
+        delegation_id: str,
+        prompt: str,
+    ) -> None:
+        """Background worker: call talk.delegate and store the result."""
+        entry = app.state.talk_delegations.get(delegation_id)
+        if entry is None:
+            return
+        try:
+            result = await app.state.send_connector_rpc(
+                user_id,
+                method="talk.delegate",
+                params={
+                    "voiceSessionId": voice_session_id,
+                    "prompt": prompt,
+                },
+                timeout_seconds=settings.talk_delegate_async_timeout_seconds,
+            )
+            text = str(result.get("text") or "").strip()
+            with database.session() as db:
+                record_voice_turn(
+                    db,
+                    voice_session_id=voice_session_id,
+                    role="assistant",
+                    source="tool",
+                    text=text or "Hermes returned an empty delegation result.",
+                )
+            entry["status"] = "completed"
+            entry["text"] = text
+            entry["error"] = None
+        except Exception as error:  # noqa: BLE001
+            logger.exception("Async talk delegation failed")
+            entry["status"] = "failed"
+            entry["text"] = None
+            entry["error"] = str(getattr(error, "detail", "") or error)
+        finally:
+            entry["updatedAt"] = datetime.now(timezone.utc)
+
     register_talk_mcp_routes(app)
 
     def build_message_response_payload(db: Session, *, conversation_id: str, job_id: str) -> tuple[dict, int]:
@@ -1134,6 +1193,102 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         db.commit()
         return success({"sdp": result.get("sdp"), "callId": result.get("callId")})
+
+    @app.post("/v1/talk/session/{voice_session_id}/delegations")
+    async def create_talk_delegation(
+        voice_session_id: str,
+        payload: TalkDelegationCreateRequest,
+        auth: AuthContext = Depends(get_auth_context),
+        db: Session = Depends(get_db),
+    ) -> JSONResponse:
+        """Start an async Hermes delegation and return immediately.
+
+        The connector RPC runs in the background with a long timeout so real
+        Hermes queries (2-4 minutes) are not cut off by Cloudflare's 100 s
+        HTTP limit. Clients poll the GET endpoint for the result.
+        """
+        voice_session = get_voice_session(db, voice_session_id=voice_session_id)
+        if voice_session is None or voice_session.user_id != auth.user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Talk session not found.")
+
+        prompt = payload.prompt.strip()
+        if not prompt:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing required argument: prompt")
+
+        record_voice_turn(
+            db,
+            voice_session_id=voice_session.id,
+            role="user",
+            source="tool",
+            text=prompt,
+        )
+        record_audit(
+            db,
+            actor_type="user",
+            actor_id=auth.user.id,
+            action="talk.delegation.create",
+            entity_type="voice_session",
+            entity_id=voice_session.id,
+        )
+        db.commit()
+
+        prune_talk_delegations()
+        delegation_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        app.state.talk_delegations[delegation_id] = {
+            "id": delegation_id,
+            "userId": auth.user.id,
+            "voiceSessionId": voice_session.id,
+            "status": "running",
+            "text": None,
+            "error": None,
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        task = asyncio.create_task(
+            run_talk_delegation(
+                user_id=auth.user.id,
+                voice_session_id=voice_session.id,
+                delegation_id=delegation_id,
+                prompt=prompt,
+            )
+        )
+        app.state.talk_delegation_tasks.add(task)
+        task.add_done_callback(app.state.talk_delegation_tasks.discard)
+
+        return success_response(
+            {"delegationId": delegation_id, "status": "running"},
+            status_code=status.HTTP_202_ACCEPTED,
+        )
+
+    @app.get("/v1/talk/session/{voice_session_id}/delegations/{delegation_id}")
+    async def get_talk_delegation(
+        voice_session_id: str,
+        delegation_id: str,
+        auth: AuthContext = Depends(get_auth_context),
+        db: Session = Depends(get_db),
+    ) -> dict:
+        """Return the current status of an async Hermes delegation."""
+        voice_session = get_voice_session(db, voice_session_id=voice_session_id)
+        if voice_session is None or voice_session.user_id != auth.user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Talk session not found.")
+
+        prune_talk_delegations()
+        entry = app.state.talk_delegations.get(delegation_id)
+        if (
+            entry is None
+            or entry["voiceSessionId"] != voice_session.id
+            or entry["userId"] != auth.user.id
+        ):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Delegation not found.")
+
+        return success(
+            {
+                "status": entry["status"],
+                "text": entry["text"],
+                "error": entry["error"],
+            }
+        )
 
     @app.post("/v1/talk/session/{voice_session_id}/turns")
     def create_talk_turn(

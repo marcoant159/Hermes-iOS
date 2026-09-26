@@ -64,6 +64,21 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         let callId: String?
     }
 
+    private struct TalkDelegationCreateRequest: Encodable {
+        let prompt: String
+    }
+
+    private struct TalkDelegationCreateResponse: Decodable {
+        let delegationId: String
+        let status: String
+    }
+
+    private struct TalkDelegationStatusResponse: Decodable {
+        let status: String
+        let text: String?
+        let error: String?
+    }
+
     private struct RealtimeSession: Decodable {
         let id: String?
     }
@@ -139,6 +154,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     private var geminiBootstrap: TalkBootstrap?
     private var geminiSessionResumptionHandle: String?
     private var hermesRelayMcpURL: String?
+    private var delegationPollingTasks: [String: Task<Void, Never>] = [:]
     private var activeProvider: String?
     private var geminiInputTranscript = ""
     private var geminiAssistantTranscript = ""
@@ -287,6 +303,10 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         stopTimer()
         startedAt = nil
         isEndingSession = true
+        for delegationTask in delegationPollingTasks.values {
+            delegationTask.cancel()
+        }
+        delegationPollingTasks.removeAll()
         currentAssistantItemID = nil
         currentUserConversationItemID = nil
         assistantTextSource = nil
@@ -844,26 +864,109 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
               let itemID = item["id"] as? String else { return }
         let content = item["content"] as? [[String: Any]] ?? []
         let prompt = content.compactMap { $0["text"] as? String }.joined(separator: "\n")
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         voiceState = .thinking
         statusMessage = "Hermes is working on that\u{2026}"
-        Task { @MainActor [weak self] in
+        let task = Task { @MainActor [weak self] in
             guard let self else { return }
-            let responseText: String
+            defer { self.delegationPollingTasks[itemID] = nil }
             do {
-                responseText = try await self.callHermesDelegate(prompt)
+                let delegationID = try await self.startHermesDelegation(prompt: prompt)
+                self.sendDelegationContext(
+                    itemID: itemID,
+                    channel: "commentary",
+                    text: "Consultando o Hermes, isso pode levar alguns minutos."
+                )
+                let responseText = try await self.pollHermesDelegation(
+                    delegationID: delegationID,
+                    itemID: itemID
+                )
+                guard !self.isEndingSession else { return }
+                self.sendDelegationContext(itemID: itemID, channel: "speakable", text: responseText)
+            } catch is CancellationError {
+                return
             } catch {
-                responseText = "Não foi possível concluir a solicitação no Hermes."
+                guard !self.isEndingSession else { return }
+                self.sendDelegationContext(
+                    itemID: itemID,
+                    channel: "speakable",
+                    text: self.delegationFailureMessage(for: error)
+                )
             }
-            guard !self.isEndingSession else { return }
-            _ = self.sendRealtimeEvent([
-                "type": "delegation.context.append",
-                "delegation_item_id": itemID,
-                "channel": "speakable",
-                "content": [
-                    ["type": "input_text", "text": responseText] as [String: Any]
-                ],
-            ])
         }
+        delegationPollingTasks[itemID] = task
+    }
+
+    /// Starts an async Hermes delegation on the relay and returns its id.
+    /// The relay answers in under a second; the long RPC runs in background.
+    private func startHermesDelegation(prompt: String) async throws -> String {
+        guard let voiceSessionID else {
+            throw RelayAPIClient.ClientError.requestFailed("Hermes tool delegation is unavailable.")
+        }
+        let response: TalkDelegationCreateResponse = try await performAuthorizedRequest { [self] in
+            let token = await self.accessTokenProvider()
+            return try await self.apiClient.post(
+                path: "talk/session/\(voiceSessionID.uuidString.lowercased())/delegations",
+                body: TalkDelegationCreateRequest(prompt: prompt),
+                accessToken: token
+            )
+        }
+        return response.delegationId
+    }
+
+    /// Polls the delegation status every 2 s for up to 10 minutes without
+    /// blocking the realtime loop, nudging the model with short commentary
+    /// lines while it waits.
+    private func pollHermesDelegation(delegationID: String, itemID: String) async throws -> String {
+        guard let voiceSessionID else {
+            throw RelayAPIClient.ClientError.requestFailed("Hermes tool delegation is unavailable.")
+        }
+        let path = "talk/session/\(voiceSessionID.uuidString.lowercased())/delegations/\(delegationID)"
+        let deadline = Date().addingTimeInterval(10 * 60)
+        var lastCommentaryAt = Date()
+        while Date() < deadline {
+            try Task.checkCancellation()
+            let response: TalkDelegationStatusResponse = try await performAuthorizedRequest { [self] in
+                let token = await self.accessTokenProvider()
+                return try await self.apiClient.get(path: path, accessToken: token)
+            }
+            switch response.status {
+            case "completed":
+                let text = (response.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                return text.isEmpty ? "O Hermes concluiu a consulta, mas não retornou texto." : text
+            case "failed":
+                throw RelayAPIClient.ClientError.requestFailed("Não foi possível concluir a consulta ao Hermes.")
+            default:
+                if Date().timeIntervalSince(lastCommentaryAt) >= 45 {
+                    lastCommentaryAt = Date()
+                    sendDelegationContext(
+                        itemID: itemID,
+                        channel: "commentary",
+                        text: "Ainda consultando…"
+                    )
+                }
+                try await Task.sleep(for: .seconds(2))
+            }
+        }
+        throw RelayAPIClient.ClientError.requestFailed("O Hermes está demorando mais que o esperado. Tente novamente.")
+    }
+
+    private func sendDelegationContext(itemID: String, channel: String, text: String) {
+        _ = sendRealtimeEvent([
+            "type": "delegation.context.append",
+            "delegation_item_id": itemID,
+            "channel": channel,
+            "content": [
+                ["type": "input_text", "text": text] as [String: Any]
+            ],
+        ])
+    }
+
+    private func delegationFailureMessage(for error: Error) -> String {
+        if case RelayAPIClient.ClientError.requestFailed(let message) = error, !message.isEmpty {
+            return message
+        }
+        return "Não foi possível concluir a solicitação no Hermes."
     }
 
     private func handleCodexLiveError(_ payload: [String: Any]) {
