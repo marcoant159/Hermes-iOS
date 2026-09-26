@@ -24,8 +24,14 @@ telas de conversas, nova conversa, seletor de modelo e voz (numeração a partir
   (`10-conversations`, `11-new-conversation`, `12-model-picker`, `13-voice-mode`),
   mantendo o estilo tolerante (`tapIfExists`, `continueAfterFailure = true`).
   `import CoreGraphics` para o `CGVector` usado ao dispensar o popover de modelo.
-- [ ] Validação no CI light.
-- [ ] Validação no CI dark.
+- [x] Validação no CI light — run `36277944106` (branch `wip/tour-more`), success.
+  `Executed 1 test, with 0 failures`. Cada passo novo achou o elemento:
+  `Tap "BackButton" Button`, `Tap "list.bullet" Button` (Conversations),
+  `Tap "Done" Button`, `Tap "square.and.pencil" Button` (New conversation),
+  `Tap "gpt-5.4-mini" Button` (model chip, via `matching(...).firstMatch`),
+  `Tap "waveform" Button` (Start voice mode), `Tap "xmark" Button` (End voice session).
+  Nenhum `error:` no log.
+- [ ] Validação no CI dark — run `36278813791` (branch `wip/tour-more`, `-f appearance=dark`).
 
 ### Notas de implementação
 
