@@ -39,8 +39,14 @@ protocol VoiceSessionServiceProtocol {
     func events() -> AsyncStream<TalkSessionEvent>
     func refreshReadiness() async
     func startSession() async
+    /// Starts a session while overriding the configured provider (wake word
+    /// forces `codex_live`). `nil` keeps the configured provider.
+    func startSession(providerOverride: String?) async
     func endSession() async
     func toggleMute() async
     func manuallyInterruptAssistantOutput()
     @discardableResult func sendImage(_ imageData: Data, mimeType: String, triggerResponse: Bool) -> Bool
+    /// Injects a spoken command that never reached the realtime session (the
+    /// wake word listener captured it). Waits for the session to be ready.
+    func injectSpokenCommand(_ command: String) async
 }
