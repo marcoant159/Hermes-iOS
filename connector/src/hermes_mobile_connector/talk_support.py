@@ -23,6 +23,17 @@ ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-9;]*[A-Za-z]")
 CODEX_REALTIME_CALLS_URL = "https://chatgpt.com/backend-api/codex/realtime/calls"
 CODEX_REALTIME_MODEL = "gpt-realtime-1.5"
 CODEX_REALTIME_VOICE = "marin"
+
+# "GPT Live via Codex" (frameless/quicksilver V3): same ChatGPT backend call
+# shape as Codex Realtime, but a distinct URL, alpha header and session body.
+CODEX_LIVE_CALLS_URL = (
+    "https://chatgpt.com/backend-api/codex/realtime/calls"
+    "?intent=quicksilver&architecture=avas"
+)
+CODEX_LIVE_MODEL = "gpt-live-1-codex"
+CODEX_LIVE_VOICE = "cove"
+CODEX_LIVE_ALPHA_HEADER = "quicksilver=v2"
+
 CODEX_ORIGINATOR = "codex_cli_rs"
 CODEX_USER_AGENT = "codex_cli_rs/0.156.1"
 CODEX_AUTH_CLAIM = "https://api.openai.com/auth"
