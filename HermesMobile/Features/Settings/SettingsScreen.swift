@@ -289,6 +289,8 @@ struct SettingsScreen: View {
         switch settingsStore.settings.voiceEngineChoice {
         case .auto:
             return "Usa GPT Realtime (Codex) quando disponível; senão, Gemini Live."
+        case .codexLive:
+            return "GPT Live com delegação das tarefas para o Hermes."
         case .codexRealtime:
             return "Fala pela sua conta ChatGPT, sem chave de API."
         case .geminiLive:

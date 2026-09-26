@@ -376,6 +376,7 @@ enum ChatModelChoice: String, Codable, CaseIterable, Hashable, Sendable, Identif
 /// Which realtime transport the talk mode should request from the connector.
 enum VoiceEngineChoice: String, Codable, CaseIterable, Hashable, Sendable, Identifiable {
     case auto
+    case codexLive = "codex_live"
     case codexRealtime = "codex_realtime"
     case geminiLive = "gemini_live"
 
@@ -384,6 +385,7 @@ enum VoiceEngineChoice: String, Codable, CaseIterable, Hashable, Sendable, Ident
     var displayName: String {
         switch self {
         case .auto: "Automático"
+        case .codexLive: "GPT Live (Codex)"
         case .codexRealtime: "GPT Realtime (Codex)"
         case .geminiLive: "Gemini Live"
         }
