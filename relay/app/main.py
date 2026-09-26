@@ -1565,6 +1565,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db: Session = Depends(get_db),
     ) -> dict:
         device = update_device_app_state(db, device=auth.device, state=payload.state)
+        audit_payload: dict = {"state": payload.state}
+        if payload.wakeWordEvent:
+            audit_payload["wakeWordEvent"] = payload.wakeWordEvent
+            logger.info(
+                "wake word event device=%s state=%s event=%s",
+                device.id,
+                payload.state,
+                payload.wakeWordEvent,
+            )
         record_audit(
             db,
             actor_type="app",
@@ -1572,7 +1581,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             action="device.app_state",
             entity_type="device",
             entity_id=device.id,
-            payload={"state": payload.state},
+            payload=audit_payload,
         )
         db.commit()
         return success(

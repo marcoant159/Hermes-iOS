@@ -22,6 +22,7 @@ final class AppContainer {
     private var isInitialized = false
     private var lastCommandCatalogRefreshAt: Date?
     private var lastKnownHostOnline = false
+    private var currentAppState = "foreground"
 
     private static let commandCatalogRefreshInterval: TimeInterval = 60
 
@@ -254,25 +255,39 @@ final class AppContainer {
         // Hands-free "oi hermes": open the GPT Live voice session and inject the
         // same-utterance command (if any) straight into it. The session owns the
         // microphone, so the wake listener stays suspended until it ends.
+        container.wakeWordService.onWakeEvent = { [weak container] event in
+            await container?.reportWakeWordEvent(event)
+        }
         container.wakeWordService.onWakeActivation = { [weak container] command in
             guard let container else { return }
             await container.talkStore.startWakeWordSession(
                 providerOverride: container.wakeWordVoiceProviderOverride()
             )
-            if let command, !command.isEmpty {
-                await container.talkStore.injectSpokenCommand(command)
+            if container.talkStore.isSessionActive {
+                await container.reportWakeWordEvent("voice session opened")
+                if let command, !command.isEmpty {
+                    await container.talkStore.injectSpokenCommand(command)
+                }
+            } else {
+                let reason = container.talkStore.blockedReason
+                    ?? container.talkStore.statusMessage
+                    ?? "unknown"
+                await container.reportWakeWordEvent("voice session failed: \(reason)")
             }
         }
         container.talkStore.onSessionStateChanged = { [weak container] in
             guard let container else { return }
             container.updateWidgetData()
-            // Voice mode owns the microphone while a session is live.
+            // Voice mode owns the microphone while a session is live. As soon as
+            // ANY session ends, re-arm the wake listener if the user enabled it,
+            // even if the listener was never suspended for it (otherwise the
+            // voice service's `setActive(false)` leaves it mute).
             Task { [weak container] in
                 guard let container else { return }
                 if container.talkStore.isSessionActive {
                     await container.wakeWordService.suspendForExternalCapture()
-                } else {
-                    await container.wakeWordService.resumeAfterExternalCapture()
+                } else if container.settingsStore.settings.wakeWordEnabled {
+                    await container.wakeWordService.ensureListening()
                 }
             }
         }
@@ -333,6 +348,14 @@ final class AppContainer {
         updateWidgetData()
     }
 
+    /// Called when the app moves to the background. The "audio" background mode
+    /// keeps the wake listener alive, but the audio session may have been torn
+    /// down by a just-ended voice session; re-arm it so "oi hermes" still works.
+    func handleAppDidEnterBackground() async {
+        await reportAppStateIfNeeded("background")
+        await startWakeWordIfEnabled()
+    }
+
     func handleRemoteNotificationWake() async {
         guard pairingStore.isPaired else { return }
         guard await sessionStore.currentAccessToken() != nil else { return }
@@ -371,11 +394,13 @@ final class AppContainer {
     /// Arms the hands-free wake word listener when the user enabled it.
     private func startWakeWordIfEnabled() async {
         guard settingsStore.settings.wakeWordEnabled else { return }
-        if wakeWordService.isEnabled {
-            await wakeWordService.handleAppBecameActive()
-        } else {
-            await wakeWordService.start()
+        // A live voice session owns the microphone; keep the listener paused
+        // until it ends instead of fighting it for the mic.
+        if talkStore.isSessionActive {
+            await wakeWordService.suspendForExternalCapture()
+            return
         }
+        await wakeWordService.ensureListening()
     }
 
     private func handlePairingActivated() async {
@@ -613,6 +638,7 @@ final class AppContainer {
     }
 
     func reportAppStateIfNeeded(_ state: String) async {
+        currentAppState = state
         guard pairingStore.isPaired, let apiClient, let accessToken = await sessionStore.currentAccessToken() else {
             return
         }
@@ -626,6 +652,32 @@ final class AppContainer {
         _ = try? await apiClient.post(
             path: "device/app-state",
             body: AppStateBody(state: state),
+            accessToken: accessToken
+        ) as AppStateResponse
+    }
+
+    /// Forwards a wake-word lifecycle/diagnostic event to the relay (visible in
+    /// its logs and audit trail) so the operator can see what happens on-device.
+    /// Best-effort: never throws, capped at the relay's 200-char limit.
+    func reportWakeWordEvent(_ event: String) async {
+        let trimmed = String(event.prefix(200))
+        guard !trimmed.isEmpty,
+              pairingStore.isPaired,
+              let apiClient,
+              let accessToken = await sessionStore.currentAccessToken() else {
+            return
+        }
+
+        struct AppStateBody: Encodable {
+            let state: String
+            let wakeWordEvent: String
+        }
+
+        struct AppStateResponse: Decodable {}
+
+        _ = try? await apiClient.post(
+            path: "device/app-state",
+            body: AppStateBody(state: currentAppState, wakeWordEvent: trimmed),
             accessToken: accessToken
         ) as AppStateResponse
     }

@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// Metadata captured when a voice session completes, used to trigger transcript injection.
 struct CompletedVoiceSession: Sendable {
@@ -10,6 +11,11 @@ struct CompletedVoiceSession: Sendable {
 @MainActor
 @Observable
 final class TalkStore {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "br.com.marcoant.hermes",
+        category: "TalkStore"
+    )
+
     var voiceState: VoiceState = .idle
     var connectionState: TalkConnectionState = .idle
     var transcriptItems: [TranscriptItem] = []
@@ -97,11 +103,17 @@ final class TalkStore {
         connectionState = .connecting
         voiceState = .thinking
         statusMessage = "Connecting..."
+        Self.logger.info("wake session start requested")
         await voiceService.startSession(providerOverride: providerOverride)
         applySnapshot(voiceService.snapshot)
 
-        // Readiness may be stale when the wake word fires from the background.
-        if !isSessionActive, !canStartSession {
+        // Readiness may be stale when the wake word fires from the background,
+        // and `startSession` returns silently when `canStartSession` is false.
+        // Retry once after a fresh readiness check so a background activation is
+        // not lost; this path used to run only when `canStartSession` was still
+        // false after the snapshot.
+        if !isSessionActive {
+            Self.logger.info("wake session inactive after first attempt, refreshing readiness")
             await voiceService.refreshReadiness()
             applySnapshot(voiceService.snapshot)
             if canStartSession {
@@ -111,8 +123,11 @@ final class TalkStore {
         }
 
         if isSessionActive {
+            Self.logger.info("wake session active")
             liveActivity.startVoiceSession()
         } else {
+            let reason = blockedReason ?? statusMessage ?? "unknown"
+            Self.logger.error("wake session failed to activate: \(reason, privacy: .public)")
             isWakeWordSession = false
             wakeWordSessionActivated = false
             wakeWordIdleTask?.cancel()

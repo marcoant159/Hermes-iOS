@@ -103,12 +103,19 @@ final class LiveWakeWordService {
     /// runs, and so the caller can complete the session bootstrap in order.
     var onWakeActivation: (@MainActor (String?) async -> Void)?
 
+    /// Called for every listener lifecycle/diagnostic event (armed, stopped,
+    /// suspended, resumed, phrase detected, session opened/failed…). The caller
+    /// forwards these to the relay so the operator can see on-device behaviour.
+    var onWakeEvent: (@MainActor (String) async -> Void)?
+
     // MARK: - Internals
 
     private let listener = WakeListener()
     private var eventTask: Task<Void, Never>?
     private var silenceTask: Task<Void, Never>?
     private var isRunning = false
+    private var interruptionObserver: NSObjectProtocol?
+    private var mediaResetObserver: NSObjectProtocol?
 
     private var isSuspended = false
     private var capturing = false
@@ -118,6 +125,34 @@ final class LiveWakeWordService {
     private var captureStartedAt = Date.distantPast
     private var lastTextAt = Date.distantPast
     private var suppressUntil = Date.distantPast
+
+    init() {
+        let center = NotificationCenter.default
+        // The system can interrupt (call/Siri) or reset the audio stack while we
+        // are recording in the background. Re-arm the listener so "oi hermes"
+        // keeps working without requiring the app to come back to foreground.
+        interruptionObserver = center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let rawValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+            Task { @MainActor [weak self] in
+                guard let self, let rawValue,
+                      let type = AVAudioSession.InterruptionType(rawValue: rawValue) else { return }
+                await self.handleAudioInterruption(type)
+            }
+        }
+        mediaResetObserver = center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.recoverAudioAfterReset()
+            }
+        }
+    }
 
     // MARK: - Lifecycle
 
@@ -130,10 +165,20 @@ final class LiveWakeWordService {
     }
 
     func start() async {
-        guard !isRunning else { return }
-        // A fresh start must not inherit a suspension left over from a previous
-        // dead/short-lived run, otherwise suspendForExternalCapture() would
-        // no-op and two capture paths would hold the mic at once.
+        // Already armed: recover instead of bailing out. This is the path taken
+        // when the listener was suspended for an external capture and the app
+        // re-arms it on foreground; returning at the old `guard !isRunning`
+        // left `isSuspended == true` forever and the listener stayed mute.
+        if isRunning {
+            if isSuspended {
+                await resumeAfterExternalCapture()
+            } else {
+                await listener.recoverIfNeeded()
+                if phase == .off { phase = .listening }
+            }
+            return
+        }
+
         isSuspended = false
         do {
             try await Self.requestPermissions()
@@ -141,6 +186,7 @@ final class LiveWakeWordService {
             lastError = error.localizedDescription
             phase = .off
             Self.logger.error("wake word permissions refused: \(error.localizedDescription, privacy: .public)")
+            emitWakeEvent("listener permission denied: \(error.localizedDescription)")
             return
         }
 
@@ -152,11 +198,13 @@ final class LiveWakeWordService {
             consume(stream)
             startSilenceWatch()
             Self.logger.info("wake word listener armed")
+            emitWakeEvent("listener armed")
         } catch {
             isRunning = false
             phase = .off
             lastError = error.localizedDescription
             Self.logger.error("wake word start failed: \(error.localizedDescription, privacy: .public)")
+            emitWakeEvent("listener start failed: \(error.localizedDescription)")
         }
     }
 
@@ -171,13 +219,27 @@ final class LiveWakeWordService {
         await listener.stop()
         phase = .off
         Self.logger.info("wake word listener stopped")
+        emitWakeEvent("listener stopped")
+    }
+
+    /// Re-arms the listener when the app returns to the foreground or when an
+    /// external capture finishes. Safe to call repeatedly. Does not disturb an
+    /// in-flight wake activation (capturing).
+    func ensureListening() async {
+        guard !capturing else { return }
+        if !isRunning {
+            await start()
+        } else if isSuspended {
+            await resumeAfterExternalCapture()
+        } else {
+            await listener.recoverIfNeeded()
+            if phase == .off { phase = .listening }
+        }
     }
 
     /// Keeps the listener healthy when the app comes back to the foreground.
     func handleAppBecameActive() async {
-        guard isRunning, !isSuspended else { return }
-        await listener.restartIfNeeded()
-        if phase == .off { phase = .listening }
+        await ensureListening()
     }
 
     /// Hands the microphone over to another capture path (Talk mode, chat
@@ -189,6 +251,7 @@ final class LiveWakeWordService {
         await listener.pause()
         phase = .off
         Self.logger.info("wake word suspended for external capture")
+        emitWakeEvent("listener suspended for external capture")
     }
 
     /// Re-arms after the other capture path is done.
@@ -201,6 +264,43 @@ final class LiveWakeWordService {
         await listener.resume()
         suppressUntil = Date().addingTimeInterval(Self.resumeSuppression)
         phase = .listening
+        if let lastError {
+            emitWakeEvent("listener resumed after error: \(lastError)")
+        } else {
+            emitWakeEvent("listener resumed")
+        }
+    }
+
+    // MARK: - Audio recovery
+
+    private func handleAudioInterruption(_ type: AVAudioSession.InterruptionType) async {
+        switch type {
+        case .began:
+            emitWakeEvent("listener interrupted by system")
+        case .ended:
+            guard isRunning, !isSuspended else { return }
+            await listener.recoverIfNeeded()
+            if phase == .off { phase = .listening }
+            emitWakeEvent("listener re-armed after interruption")
+        @unknown default:
+            break
+        }
+    }
+
+    private func recoverAudioAfterReset() async {
+        guard isRunning, !isSuspended, !capturing else { return }
+        await listener.forceRestart()
+        if phase == .off { phase = .listening }
+        emitWakeEvent("listener re-armed after media reset")
+    }
+
+    /// Logs locally and forwards to the relay for remote diagnosis.
+    private func emitWakeEvent(_ event: String) {
+        Self.logger.info("wake event: \(event, privacy: .public)")
+        Task { @MainActor [weak self] in
+            guard let self, let onWakeEvent = self.onWakeEvent else { return }
+            await onWakeEvent(event)
+        }
     }
 
     // MARK: - Listener plumbing
@@ -224,6 +324,7 @@ final class LiveWakeWordService {
         case .failed(let message):
             lastError = message
             Self.logger.error("wake listener failed: \(message, privacy: .public)")
+            emitWakeEvent("listener failed: \(message)")
             guard isRunning, !isSuspended else { return }
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(Self.failureRetryDelay))
@@ -252,6 +353,7 @@ final class LiveWakeWordService {
             phase = .capturing
             Self.playActivationSound()
             Self.logger.info("wake phrase detected")
+            emitWakeEvent("wake phrase detected")
             return
         }
 
@@ -305,6 +407,7 @@ final class LiveWakeWordService {
         await suspendForExternalCapture()
         let commandState = payload == nil ? "none" : "present"
         Self.logger.info("wake activation dispatched (command: \(commandState, privacy: .public))")
+        emitWakeEvent("wake activation dispatched (command: \(commandState))")
         await onWakeActivation?(payload)
     }
 
@@ -553,6 +656,40 @@ private actor WakeListener {
         }
     }
 
+    /// Re-arms capture after the audio stack was taken over by another subsystem
+    /// (a voice session calling `setActive(false)`, an interruption, a media
+    /// reset). Unlike `restartIfNeeded`, it does not bail out when a stale
+    /// segment is still marked as running or when the listener is paused.
+    func recoverIfNeeded() async {
+        guard !isStopped else { return }
+        if isPaused {
+            await resume()
+            return
+        }
+        if audioEngine.isRunning, isSegmentRunning { return }
+        await forceRestart()
+    }
+
+    /// Tears the current segment down and brings the engine + analyzer back up.
+    func forceRestart() async {
+        guard !isStopped, !isPaused else { return }
+        restartTask?.cancel()
+        restartTask = nil
+        await endSegment()
+        restartTask?.cancel()
+        restartTask = nil
+        do {
+            if !audioEngine.isRunning {
+                try activateSession()
+                audioEngine.prepare()
+                try audioEngine.start()
+            }
+            try await startSegment()
+        } catch {
+            emit(.failed(error.localizedDescription))
+        }
+    }
+
     func stop() {
         isStopped = true
         isPaused = false
@@ -685,7 +822,15 @@ private actor WakeListener {
 
     private func activateSession() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+        // `.playAndRecord` (instead of `.record`) keeps the session eligible to
+        // record while the app is in the background and lets the wake
+        // confirmation beep play. `.defaultToSpeaker` avoids routing it to the
+        // earpiece when no headset is connected.
+        try session.setCategory(
+            .playAndRecord,
+            mode: .measurement,
+            options: [.duckOthers, .defaultToSpeaker]
+        )
         try session.setActive(true, options: .notifyOthersOnDeactivation)
     }
 

@@ -120,7 +120,10 @@ final class LiveSpeechService {
                         self.transcript = text
                         self.isListening = false
                         Task {
-                            await AppContainer.sharedDefault().wakeWordService.resumeAfterExternalCapture()
+                            // Re-arm even if the wake listener was not suspended
+                            // for this dictation (its own audio session can tear
+                            // down the shared one).
+                            await AppContainer.sharedDefault().wakeWordService.ensureListening()
                         }
                         self.onTranscriptChange?(text)
                         if !text.isEmpty {
@@ -144,7 +147,7 @@ final class LiveSpeechService {
 
         Task {
             await controller.stop()
-            await AppContainer.sharedDefault().wakeWordService.resumeAfterExternalCapture()
+            await AppContainer.sharedDefault().wakeWordService.ensureListening()
         }
     }
 

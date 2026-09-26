@@ -112,6 +112,7 @@ class PushRegisterRequest(BaseModel):
 
 class DeviceAppStateRequest(BaseModel):
     state: str = Field(pattern="^(foreground|background)$")
+    wakeWordEvent: str | None = Field(default=None, max_length=200)
 
 
 class AttachmentPayload(BaseModel):
