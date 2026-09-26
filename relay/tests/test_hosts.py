@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from threading import Thread
 
@@ -1318,4 +1319,195 @@ def test_talk_sdp_exchange_rejects_oversized_sdp(tmp_path):
             )
 
             assert response.status_code == 413
+
+
+def _start_talk_session(client: TestClient, websocket, auth: dict) -> str:
+    create_response: dict = {}
+
+    def create_session() -> None:
+        create_response["payload"] = client.post("/v1/talk/session", headers=auth)
+
+    thread = Thread(target=create_session)
+    thread.start()
+    create_rpc = websocket.receive_json()
+    assert create_rpc["type"] == "rpc.request"
+    assert create_rpc["method"] == "talk.session.create"
+    websocket.send_json(
+        {
+            "type": "rpc.response",
+            "requestId": create_rpc["requestId"],
+            "success": True,
+            "result": {
+                "session": {},
+                "model": "gpt-realtime-1.5",
+                "voice": "marin",
+                "provider": "codex_live",
+            },
+        }
+    )
+    thread.join(timeout=5)
+    assert create_response["payload"].status_code == 200
+    return create_response["payload"].json()["data"]["voiceSession"]["id"]
+
+
+def _poll_delegation(
+    client: TestClient,
+    voice_session_id: str,
+    delegation_id: str,
+    auth: dict,
+    *,
+    timeout: float = 5.0,
+) -> dict:
+    deadline = time.time() + timeout
+    payload: dict = {"data": {"status": "running"}}
+    while time.time() < deadline:
+        response = client.get(
+            f"/v1/talk/session/{voice_session_id}/delegations/{delegation_id}",
+            headers=auth,
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        if payload["data"]["status"] in ("completed", "failed"):
+            return payload
+        time.sleep(0.05)
+    return payload
+
+
+def test_talk_async_delegation_completes_with_polling(tmp_path):
+    with build_client(tmp_path) as client:
+        connector_data = setup_connector(client)
+        access_token = _pair_phone(
+            client, connector_data["connectorCredential"], "e1e1e1e1-f1f1-a2a2-b2b2-060606060606"
+        )
+        auth = {"Authorization": f"Bearer {access_token}"}
+
+        with client.websocket_connect(
+            "/v1/hosts/ws",
+            headers={"Authorization": f"Bearer {connector_data['connectorCredential']}"},
+        ) as websocket:
+            websocket.send_json(_hello_payload())
+            assert websocket.receive_json()["type"] == "ready"
+            voice_session_id = _start_talk_session(client, websocket, auth)
+
+            response = client.post(
+                f"/v1/talk/session/{voice_session_id}/delegations",
+                headers=auth,
+                json={"prompt": "Qual a umidade da fazenda?"},
+            )
+            assert response.status_code == 202
+            created = response.json()["data"]
+            assert created["status"] == "running"
+            delegation_id = created["delegationId"]
+
+            delegate_rpc = websocket.receive_json()
+            assert delegate_rpc["type"] == "rpc.request"
+            assert delegate_rpc["method"] == "talk.delegate"
+            assert delegate_rpc["params"]["voiceSessionId"] == voice_session_id
+            assert delegate_rpc["params"]["prompt"] == "Qual a umidade da fazenda?"
+
+            running = client.get(
+                f"/v1/talk/session/{voice_session_id}/delegations/{delegation_id}",
+                headers=auth,
+            )
+            assert running.status_code == 200
+            assert running.json()["data"]["status"] == "running"
+
+            websocket.send_json(
+                {
+                    "type": "rpc.response",
+                    "requestId": delegate_rpc["requestId"],
+                    "success": True,
+                    "result": {"text": "A umidade está em 42%."},
+                }
+            )
+
+            payload = _poll_delegation(client, voice_session_id, delegation_id, auth)
+            assert payload["data"]["status"] == "completed"
+            assert payload["data"]["text"] == "A umidade está em 42%."
+            assert payload["data"]["error"] is None
+
+
+def test_talk_async_delegation_reports_failure(tmp_path):
+    with build_client(tmp_path) as client:
+        connector_data = setup_connector(client)
+        access_token = _pair_phone(
+            client, connector_data["connectorCredential"], "e2e2e2e2-f2f2-a3a3-b3b3-070707070707"
+        )
+        auth = {"Authorization": f"Bearer {access_token}"}
+
+        with client.websocket_connect(
+            "/v1/hosts/ws",
+            headers={"Authorization": f"Bearer {connector_data['connectorCredential']}"},
+        ) as websocket:
+            websocket.send_json(_hello_payload())
+            assert websocket.receive_json()["type"] == "ready"
+            voice_session_id = _start_talk_session(client, websocket, auth)
+
+            response = client.post(
+                f"/v1/talk/session/{voice_session_id}/delegations",
+                headers=auth,
+                json={"prompt": "Leia os sensores."},
+            )
+            assert response.status_code == 202
+            delegation_id = response.json()["data"]["delegationId"]
+
+            delegate_rpc = websocket.receive_json()
+            websocket.send_json(
+                {
+                    "type": "rpc.response",
+                    "requestId": delegate_rpc["requestId"],
+                    "success": False,
+                    "error": "Hermes host did not respond in time.",
+                }
+            )
+
+            payload = _poll_delegation(client, voice_session_id, delegation_id, auth)
+            assert payload["data"]["status"] == "failed"
+            assert payload["data"]["error"] == "Hermes host did not respond in time."
+            assert payload["data"]["text"] is None
+
+
+def test_talk_async_delegation_rejects_unknown_session(tmp_path):
+    with build_client(tmp_path) as client:
+        connector_data = setup_connector(client)
+        access_token = _pair_phone(
+            client, connector_data["connectorCredential"], "e3e3e3e3-f3f3-a4a4-b4b4-080808080808"
+        )
+        auth = {"Authorization": f"Bearer {access_token}"}
+
+        response = client.post(
+            f"/v1/talk/session/{uuid.uuid4()}/delegations",
+            headers=auth,
+            json={"prompt": "Oi"},
+        )
+        assert response.status_code == 404
+
+        status = client.get(
+            f"/v1/talk/session/{uuid.uuid4()}/delegations/{uuid.uuid4()}",
+            headers=auth,
+        )
+        assert status.status_code == 404
+
+
+def test_talk_async_delegation_get_unknown_delegation_returns_404(tmp_path):
+    with build_client(tmp_path) as client:
+        connector_data = setup_connector(client)
+        access_token = _pair_phone(
+            client, connector_data["connectorCredential"], "e4e4e4e4-f4f4-a5a5-b5b5-090909090909"
+        )
+        auth = {"Authorization": f"Bearer {access_token}"}
+
+        with client.websocket_connect(
+            "/v1/hosts/ws",
+            headers={"Authorization": f"Bearer {connector_data['connectorCredential']}"},
+        ) as websocket:
+            websocket.send_json(_hello_payload())
+            assert websocket.receive_json()["type"] == "ready"
+            voice_session_id = _start_talk_session(client, websocket, auth)
+
+            response = client.get(
+                f"/v1/talk/session/{voice_session_id}/delegations/{uuid.uuid4()}",
+                headers=auth,
+            )
+            assert response.status_code == 404
 
