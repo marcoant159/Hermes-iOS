@@ -14,6 +14,30 @@ Objetivo:
       - Connector: venv é editable apontando para `/root/hermes-mobile/connector` (repo principal);
         rodei com `PYTHONPATH=src` para usar este worktree → 14 passed.
 
+- [x] Tarefa 2 — investigação do relay:
+  - "current" era a única conversa com `is_archived == False` (`get_or_create_current_conversation`).
+  - Mensagens referenciam `conversation_id`; `message_jobs` também, e guardam
+    `session_id_snapshot` (id de sessão do Hermes do momento do envio).
+  - O id de sessão do Hermes vive em `conversations.hermes_session_id`; ao completar
+    um job, `complete_message_job` grava o session id devolvido pela Hermes na conversa.
+  - `clear` arquiva a conversa (e zera `hermes_session_id`) e cria uma nova.
+- [x] Tarefa 2 — relay implementado:
+  - Coluna ADITIVA `conversations.is_active BOOLEAN NOT NULL DEFAULT true` + migração
+    em `database.py` (mesmo mecanismo ALTER TABLE existente) e índice
+    `ix_conversations_user_active`.
+  - `get_current_conversation` prefere `is_active`, com fallback para a conversa mais
+    recente não arquivada (compatibilidade com bancos antigos).
+  - `create_empty_conversation` (arquiva a atual, cria nova sem session id),
+    `select_conversation` (escopo por usuário; 404 caso contrário), 
+    `list_conversations_for_user` (contagem de mensagens, mais recentes primeiro, limit ≤ 50)
+    e `serialize_conversation_summary`.
+  - Auto-título: `append_message` define o título a partir da 1ª mensagem de usuário
+    (`conversation_title_from_message`, ~60 chars), se ainda for "Hermes"/"Nova conversa".
+  - Endpoints: `GET /v1/conversations`, `POST /v1/conversations`,
+    `POST /v1/conversations/{id}/select`; `current`/`clear` inalterados.
+  - Testes: `relay/tests/test_conversations.py` (11) — passam. Suíte do relay verde
+    (test_hosts incluso).
+
 ## Notas de ambiente
 
 - `connector/.venv` está instalado em modo editable apontando para
