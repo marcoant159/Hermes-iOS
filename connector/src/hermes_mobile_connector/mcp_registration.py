@@ -249,12 +249,16 @@ def native_mcp_readiness_message(*, hermes_command: str) -> str:
 def _hermes_chat_running(hermes_command: str) -> bool:
     command_parts = shlex.split(hermes_command)
     executable = Path(command_parts[0]).name if command_parts else "hermes"
-    process = subprocess.run(
-        ["ps", "-axo", "pid=,command="],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        process = subprocess.run(
+            ["ps", "-axo", "pid=,command="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return False
     if process.returncode != 0:
         return False
 
