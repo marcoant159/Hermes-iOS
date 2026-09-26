@@ -229,11 +229,29 @@ final class ChatStore {
     }
 
     func clearConversation() async throws {
+        let fresh = try await hermesClient.clearConversation()
+        applySwitchedConversation(fresh)
+    }
+
+    func createConversation() async throws {
+        let fresh = try await hermesClient.createConversation()
+        applySwitchedConversation(fresh)
+    }
+
+    func selectConversation(id: UUID) async throws {
+        let conversation = try await hermesClient.selectConversation(id: id)
+        applySwitchedConversation(conversation)
+    }
+
+    func listConversations() async throws -> [ConversationSummary] {
+        try await hermesClient.listConversations()
+    }
+
+    private func applySwitchedConversation(_ fresh: Conversation) {
         streamingTask?.cancel()
         streamingTask = nil
         streamingMessageID = nil
         chatLiveActivity.endActivity()
-        let fresh = try await hermesClient.clearConversation()
         conversation = fresh
         lastTokenUsage = fresh.latestUsage
         pendingMessageSentAt = nil

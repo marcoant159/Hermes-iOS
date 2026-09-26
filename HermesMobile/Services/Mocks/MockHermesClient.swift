@@ -105,6 +105,29 @@ final class MockHermesClient: HermesClientProtocol {
         return fresh
     }
 
+    func createConversation() async throws -> Conversation {
+        let fresh = Conversation(title: "Nova conversa")
+        currentConversation = fresh
+        return fresh
+    }
+
+    func selectConversation(id: UUID) async throws -> Conversation {
+        currentConversation ?? Conversation(id: id, title: "Hermes")
+    }
+
+    func listConversations() async throws -> [ConversationSummary] {
+        guard let currentConversation else { return [] }
+        return [
+            ConversationSummary(
+                id: currentConversation.id,
+                title: currentConversation.title,
+                updatedAt: currentConversation.lastActivity,
+                messageCount: currentConversation.messages.count,
+                isCurrent: true
+            )
+        ]
+    }
+
     func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
         return currentConversation ?? Conversation(title: "Hermes")
     }

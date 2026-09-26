@@ -60,6 +60,18 @@ final class ResilientHermesClient: HermesClientProtocol {
         try await primary.clearConversation()
     }
 
+    func createConversation() async throws -> Conversation {
+        try await primary.createConversation()
+    }
+
+    func selectConversation(id: UUID) async throws -> Conversation {
+        try await primary.selectConversation(id: id)
+    }
+
+    func listConversations() async throws -> [ConversationSummary] {
+        try await primary.listConversations()
+    }
+
     func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
         try await primary.injectVoiceTranscript(voiceSessionId: voiceSessionId)
     }

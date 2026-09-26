@@ -16,6 +16,10 @@ struct ChatScreen: View {
     @FocusState private var isComposerFocused: Bool
 
     @State private var showAttachmentPicker = false
+    @State private var showConversationList = false
+    @State private var conversationSummaries: [ConversationSummary] = []
+    @State private var isLoadingConversationList = false
+    @State private var isSwitchingConversation = false
     private let thinkingIndicatorID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
 
     var body: some View {
@@ -93,6 +97,125 @@ struct ChatScreen: View {
             .presentationDetents([.height(220)])
             .presentationDragIndicator(.hidden)
         }
+        .sheet(isPresented: $showConversationList) {
+            conversationListSheet
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+    }
+
+    // MARK: - Conversations
+
+    private var conversationListSheet: some View {
+        NavigationStack {
+            Group {
+                if isLoadingConversationList && conversationSummaries.isEmpty {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if conversationSummaries.isEmpty {
+                    ContentUnavailableView(
+                        "No conversations",
+                        systemImage: "bubble.left.and.bubble.right",
+                        description: Text("Start a new conversation with the compose button.")
+                    )
+                } else {
+                    List(conversationSummaries) { summary in
+                        Button {
+                            Task { await selectConversation(summary) }
+                        } label: {
+                            conversationRow(summary)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isSwitchingConversation)
+                    }
+                    .listStyle(.plain)
+                    .refreshable { await loadConversationSummaries() }
+                }
+            }
+            .navigationTitle("Conversations")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("New") {
+                        Task {
+                            await startNewConversation()
+                            showConversationList = false
+                        }
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        showConversationList = false
+                    }
+                }
+            }
+        }
+        .task { await loadConversationSummaries() }
+    }
+
+    private func conversationRow(_ summary: ConversationSummary) -> some View {
+        HStack(spacing: Design.Spacing.sm) {
+            VStack(alignment: .leading, spacing: Design.Spacing.xxs) {
+                Text(summary.title)
+                    .font(Design.Typography.callout)
+                    .foregroundStyle(Design.Colors.foreground)
+                    .lineLimit(1)
+                Text(summary.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                    .font(Design.Typography.caption)
+                    .foregroundStyle(Design.Colors.secondaryForeground)
+            }
+            Spacer(minLength: Design.Spacing.sm)
+            if summary.isCurrent {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Design.Brand.accent)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
+    private func loadConversationSummaries() async {
+        isLoadingConversationList = true
+        defer { isLoadingConversationList = false }
+        do {
+            conversationSummaries = try await chatStore.listConversations()
+        } catch {
+            conversationSummaries = []
+        }
+    }
+
+    private func startNewConversation() async {
+        guard !isSwitchingConversation else { return }
+        isSwitchingConversation = true
+        defer { isSwitchingConversation = false }
+        do {
+            try await chatStore.createConversation()
+            showStatusCard = false
+            messageText = ""
+            pendingAttachments = []
+            scrollToBottom()
+        } catch {
+            // Conversation unchanged on failure — user can retry
+        }
+    }
+
+    private func selectConversation(_ summary: ConversationSummary) async {
+        guard !isSwitchingConversation else { return }
+        guard !summary.isCurrent else {
+            showConversationList = false
+            return
+        }
+        isSwitchingConversation = true
+        defer { isSwitchingConversation = false }
+        do {
+            try await chatStore.selectConversation(id: summary.id)
+            showConversationList = false
+            showStatusCard = false
+            messageText = ""
+            pendingAttachments = []
+            scrollToBottom()
+        } catch {
+            // Conversation unchanged on failure — user can retry
+        }
     }
 
     // MARK: - Toolbar
@@ -103,8 +226,16 @@ struct ChatScreen: View {
             modelStatusChip
         }
         ToolbarItem(placement: .topBarTrailing) {
-            GlassCircleButton(icon: "gearshape", accessibilityLabel: "Open settings") {
-                router.presentSheet(.settings)
+            HStack(spacing: Design.Spacing.xs) {
+                GlassCircleButton(icon: "list.bullet", accessibilityLabel: "Conversations") {
+                    showConversationList = true
+                }
+                GlassCircleButton(icon: "square.and.pencil", accessibilityLabel: "New conversation") {
+                    Task { await startNewConversation() }
+                }
+                GlassCircleButton(icon: "gearshape", accessibilityLabel: "Open settings") {
+                    router.presentSheet(.settings)
+                }
             }
         }
     }
