@@ -1404,6 +1404,9 @@ def test_talk_async_delegation_completes_with_polling(tmp_path):
             assert delegate_rpc["method"] == "talk.delegate"
             assert delegate_rpc["params"]["voiceSessionId"] == voice_session_id
             assert delegate_rpc["params"]["prompt"] == "Qual a umidade da fazenda?"
+            assert delegate_rpc["params"]["recentTurns"] == [
+                {"role": "user", "text": "Qual a umidade da fazenda?"}
+            ]
 
             running = client.get(
                 f"/v1/talk/session/{voice_session_id}/delegations/{delegation_id}",
@@ -1425,6 +1428,46 @@ def test_talk_async_delegation_completes_with_polling(tmp_path):
             assert payload["data"]["status"] == "completed"
             assert payload["data"]["text"] == "A umidade está em 42%."
             assert payload["data"]["error"] is None
+
+
+def test_talk_async_delegation_sends_recent_voice_turns_in_order(tmp_path):
+    with build_client(tmp_path) as client:
+        connector_data = setup_connector(client)
+        access_token = _pair_phone(
+            client, connector_data["connectorCredential"], "e5e5e5e5-f5f5-a6a6-b6b6-0a0a0a0a0a0a"
+        )
+        auth = {"Authorization": f"Bearer {access_token}"}
+
+        with client.websocket_connect(
+            "/v1/hosts/ws",
+            headers={"Authorization": f"Bearer {connector_data['connectorCredential']}"},
+        ) as websocket:
+            websocket.send_json(_hello_payload())
+            assert websocket.receive_json()["type"] == "ready"
+            voice_session_id = _start_talk_session(client, websocket, auth)
+
+            for role, text in (("user", "Bom dia"), ("assistant", "Bom dia, Marco!")):
+                recorded = client.post(
+                    f"/v1/talk/session/{voice_session_id}/turns",
+                    headers=auth,
+                    json={"role": role, "source": "tool", "text": text},
+                )
+                assert recorded.status_code == 200
+
+            response = client.post(
+                f"/v1/talk/session/{voice_session_id}/delegations",
+                headers=auth,
+                json={"prompt": "E os sensores?"},
+            )
+            assert response.status_code == 202
+
+            delegate_rpc = websocket.receive_json()
+            assert delegate_rpc["method"] == "talk.delegate"
+            assert delegate_rpc["params"]["recentTurns"] == [
+                {"role": "user", "text": "Bom dia"},
+                {"role": "assistant", "text": "Bom dia, Marco!"},
+                {"role": "user", "text": "E os sensores?"},
+            ]
 
 
 def test_talk_async_delegation_reports_failure(tmp_path):

@@ -41,6 +41,7 @@ class HermesAPIExecutor:
     api_server_key: str | None = None
     provider: str | None = None
     model: str | None = None
+    model_options: dict | None = None
 
     def _base_url(self) -> str:
         return self.api_server_url.rstrip("/")
@@ -123,14 +124,17 @@ class HermesAPIExecutor:
 
         return messages
 
-    def _model_payload(self) -> dict[str, str]:
+    def _model_payload(self) -> dict:
         """Select the model fields for the chat completions request.
 
         With a provider/model override the API server takes them per request;
         otherwise we fall back to the server's ``hermes-agent`` default.
         """
         if self.provider and self.model:
-            return {"provider": self.provider, "model": self.model}
+            payload: dict = {"provider": self.provider, "model": self.model}
+            if self.model_options:
+                payload["model_options"] = self.model_options
+            return payload
         return {"model": "hermes-agent"}
 
     def _build_payload(

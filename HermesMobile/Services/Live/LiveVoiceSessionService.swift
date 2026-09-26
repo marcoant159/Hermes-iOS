@@ -907,7 +907,8 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
                     itemID: itemID
                 )
                 guard !self.isEndingSession else { return }
-                self.sendDelegationContext(itemID: itemID, channel: "speakable", text: responseText)
+                let speakable = "Sobre a pergunta \"\(prompt)\": \(responseText)"
+                self.sendDelegationContext(itemID: itemID, channel: "speakable", text: speakable)
             } catch is CancellationError {
                 return
             } catch {
