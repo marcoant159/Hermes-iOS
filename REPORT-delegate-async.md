@@ -27,8 +27,21 @@ Cloudflare corta requisições em 100 s. Solução: POST assíncrono + polling.
 - [x] Relay: endpoints POST/GET + estado em memória (TTL 30 min) em `main.py`.
 - [x] Testes do relay (`tests/test_hosts.py`): 4 novos cenários.
 - [x] Testes existentes de talk/delegation: 15 passed.
-- [ ] App: polling assíncrono.
-- [ ] Rodar testes finais e commits.
+- [x] App: polling assíncrono (`handleCodexLiveDelegation`, só `codex_live`).
+- [ ] Rodar testes finais (relay) e commits finais.
+
+## Implementação (app — `LiveVoiceSessionService.swift`)
+- `handleCodexLiveDelegation` (somente `codex_live`) agora:
+  - `POST talk/session/{id}/delegations` via `apiClient`/`performAuthorizedRequest`;
+  - envia `delegation.context.append` `commentary` imediato;
+  - faz polling do GET a cada 2 s por até 10 min (via `Task`, sem bloquear);
+  - a cada ~45 s manda `commentary` "Ainda consultando…";
+  - conclui com `speakable`; falha/timeout → `speakable` curto em português.
+- `delegationPollingTasks` guarda as Tasks por `itemID`; `endSession()` cancela
+  todas.
+- `callHermesDelegate` (síncrono via MCP) permanece para Gemini Live.
+- Novos tipos: `TalkDelegationCreateRequest/Response`, `TalkDelegationStatusResponse`.
+- Sem execução de swift/xcodebuild (conforme restrições); alteração revisada à mão.
 
 ## Implementação (relay)
 - `config.py`: `talk_delegate_async_timeout_seconds` (env
