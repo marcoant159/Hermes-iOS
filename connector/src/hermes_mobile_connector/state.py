@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 import json
 import os
 from pathlib import Path
+import stat
+import tempfile
+import threading
 
 
 def _default_state_dir() -> Path:
@@ -91,67 +95,116 @@ class ConnectorStateStore:
         self.state_dir = (state_dir or _default_state_dir()).expanduser()
         self.state_path = self.state_dir / "state.json"
         self.secrets_path = self.state_dir / "secrets.json"
+        # The store is read and written from worker threads (`asyncio.to_thread`)
+        # as well as the event loop, so every load/save/update is serialized.
+        self._lock = threading.RLock()
 
     def load(self) -> ConnectorState:
-        if not self.state_path.exists():
-            raise RuntimeError(
-                "Connector is not set up yet. Run `hermes-mobile setup` first "
-                "or use the legacy `hermes-mobile enroll --code ...` flow."
+        with self._lock:
+            if not self.state_path.exists():
+                raise RuntimeError(
+                    "Connector is not set up yet. Run `hermes-mobile setup` first "
+                    "or use the legacy `hermes-mobile enroll --code ...` flow."
+                )
+            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            runtime_config = data.get("runtime_config")
+            if isinstance(runtime_config, dict):
+                data["runtime_config"] = ConnectorRuntimeConfig(**runtime_config)
+            realtime_talk = data.get("realtime_talk")
+            if isinstance(realtime_talk, dict):
+                data["realtime_talk"] = RealtimeTalkConfig(**realtime_talk)
+            voice_context_snapshot = data.get("voice_context_snapshot")
+            if isinstance(voice_context_snapshot, dict):
+                data["voice_context_snapshot"] = VoiceContextSnapshot(**voice_context_snapshot)
+            data.setdefault(
+                "mcp_configured",
+                bool(data.get("mcp_registered_at") or data.get("mcp_command_path")),
             )
-        data = json.loads(self.state_path.read_text(encoding="utf-8"))
-        runtime_config = data.get("runtime_config")
-        if isinstance(runtime_config, dict):
-            data["runtime_config"] = ConnectorRuntimeConfig(**runtime_config)
-        realtime_talk = data.get("realtime_talk")
-        if isinstance(realtime_talk, dict):
-            data["realtime_talk"] = RealtimeTalkConfig(**realtime_talk)
-        voice_context_snapshot = data.get("voice_context_snapshot")
-        if isinstance(voice_context_snapshot, dict):
-            data["voice_context_snapshot"] = VoiceContextSnapshot(**voice_context_snapshot)
-        data.setdefault(
-            "mcp_configured",
-            bool(data.get("mcp_registered_at") or data.get("mcp_command_path")),
-        )
-        return ConnectorState(**data)
+            return ConnectorState(**data)
 
     def save(self, state: ConnectorState) -> ConnectorState:
+        with self._lock:
+            self._write_state(state)
+            return state
+
+    def update(self, mutator: Callable[[ConnectorState], None]) -> ConnectorState:
+        """Atomically load, mutate, and persist the latest state.
+
+        Use this instead of ``load`` + ``save`` whenever the mutation happens
+        after slow work (subprocesses, network calls) or from a background
+        thread: it serializes against other writers and only the mutated fields
+        are derived from the newest state, so concurrent writes are not lost.
+        """
+        with self._lock:
+            state = self.load()
+            mutator(state)
+            self._write_state(state)
+            return state
+
+    def _write_state(self, state: ConnectorState) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         try:
             os.chmod(self.state_dir, 0o700)
         except PermissionError:
             pass
 
-        self.state_path.write_text(json.dumps(asdict(state), indent=2, sort_keys=True), encoding="utf-8")
+        payload = json.dumps(asdict(state), indent=2, sort_keys=True)
+        self._atomic_write(self.state_path, payload, default_mode=0o600)
+
+    @staticmethod
+    def _atomic_write(path: Path, payload: str, *, default_mode: int) -> None:
+        """Write ``payload`` to ``path`` atomically, keeping its current mode.
+
+        The temp file lives in the same directory so ``os.replace`` is a
+        same-filesystem rename: readers never observe a half-written state.json.
+        """
         try:
-            os.chmod(self.state_path, 0o600)
-        except PermissionError:
-            pass
-        return state
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+        except FileNotFoundError:
+            mode = default_mode
+
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+                tmp_file.write(payload)
+            try:
+                os.chmod(tmp_name, mode)
+            except PermissionError:
+                pass
+            os.replace(tmp_name, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
     def load_secrets(self) -> ConnectorSecrets:
-        if not self.secrets_path.exists():
-            return ConnectorSecrets()
-        data = json.loads(self.secrets_path.read_text(encoding="utf-8"))
-        return ConnectorSecrets(**data)
+        with self._lock:
+            if not self.secrets_path.exists():
+                return ConnectorSecrets()
+            data = json.loads(self.secrets_path.read_text(encoding="utf-8"))
+            return ConnectorSecrets(**data)
 
     def save_secrets(self, secrets: ConnectorSecrets) -> ConnectorSecrets:
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            os.chmod(self.state_dir, 0o700)
-        except PermissionError:
-            pass
+        with self._lock:
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(self.state_dir, 0o700)
+            except PermissionError:
+                pass
 
-        self.secrets_path.write_text(json.dumps(asdict(secrets), indent=2, sort_keys=True), encoding="utf-8")
-        try:
-            os.chmod(self.secrets_path, 0o600)
-        except PermissionError:
-            pass
-        return secrets
+            payload = json.dumps(asdict(secrets), indent=2, sort_keys=True)
+            self._atomic_write(self.secrets_path, payload, default_mode=0o600)
+            return secrets
 
     def clear(self) -> None:
-        if self.state_path.exists():
-            self.state_path.unlink()
-        if self.secrets_path.exists():
-            self.secrets_path.unlink()
-        if self.state_dir.exists() and not any(self.state_dir.iterdir()):
-            self.state_dir.rmdir()
+        with self._lock:
+            if self.state_path.exists():
+                self.state_path.unlink()
+            if self.secrets_path.exists():
+                self.secrets_path.unlink()
+            if self.state_dir.exists() and not any(self.state_dir.iterdir()):
+                self.state_dir.rmdir()
