@@ -121,6 +121,9 @@ final class SensorUploadService {
     private let healthService: LiveHealthService
     private let motionService: LiveMotionService?
 
+    /// Relay's `SensorHealthRequest.samples` accepts at most 100 items.
+    static let maxHealthSamplesPerRequest = 100
+
     private var isActive = false
     private var isDraining = false
     private var outboxState: SensorOutboxState
@@ -268,9 +271,11 @@ final class SensorUploadService {
             }
 
             if !outboxState.pendingHealthSamples.isEmpty {
-                let delivered = await uploadHealth(outboxState.pendingHealthSamples)
+                let batch = Array(outboxState.pendingHealthSamples.prefix(Self.maxHealthSamplesPerRequest))
+                let delivered = await uploadHealth(batch)
                 guard delivered else { break }
-                outboxState.pendingHealthSamples.removeAll()
+                let batchKeys = Set(batch.map(\.dedupeKey))
+                outboxState.pendingHealthSamples.removeAll { batchKeys.contains($0.dedupeKey) }
                 persistOutboxState()
                 continue
             }
