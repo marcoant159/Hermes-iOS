@@ -38,6 +38,22 @@ Objetivo:
   - Testes: `relay/tests/test_conversations.py` (11) — passam. Suíte do relay verde
     (test_hosts incluso).
 
+- [x] Tarefa 2 — app implementado:
+  - `HermesClientProtocol` ganhou `createConversation`, `selectConversation(id:)` e
+    `listConversations`, além do modelo `ConversationSummary` (definido no próprio
+    arquivo do protocolo — nenhum arquivo Swift novo no app target).
+  - `LiveHermesClient`: chama `POST /v1/conversations`,
+    `POST /v1/conversations/{id}/select` e `GET /v1/conversations`.
+    `MockHermesClient` e `ResilientHermesClient` implementam os mesmos métodos.
+  - `ChatStore`: `createConversation`/`selectConversation` reaproveitam
+    `applySwitchedConversation` (cancela streaming, limpa pending, atualiza cache);
+    `listConversations` delega ao cliente.
+  - `ChatScreen`: botões `list.bullet` (lista) e `square.and.pencil` (nova conversa)
+    na barra superior; sheet de conversas mostra título/data e seleciona a conversa.
+  - Test doubles em `AppStoresTests` atualizados + teste
+    `chatStoreSwitchesConversationOnCreateAndSelect`. Não rodei xcodebuild/swift
+    (combinado); revisão manual.
+
 ## Notas de ambiente
 
 - `connector/.venv` está instalado em modo editable apontando para
