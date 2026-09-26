@@ -1167,6 +1167,60 @@ def test_talk_session_create_forwards_requested_provider(tmp_path):
             assert bootstrap["clientSecret"] is None
 
 
+def test_talk_session_create_forwards_codex_live_provider(tmp_path):
+    with build_client(tmp_path) as client:
+        connector_data = setup_connector(client)
+        access_token = _pair_phone(
+            client, connector_data["connectorCredential"], "c2c2c2c2-d2d2-e2e2-f2f2-030303030303"
+        )
+
+        with client.websocket_connect(
+            "/v1/hosts/ws",
+            headers={"Authorization": f"Bearer {connector_data['connectorCredential']}"},
+        ) as websocket:
+            websocket.send_json(_hello_payload())
+            assert websocket.receive_json()["type"] == "ready"
+
+            create_response: dict = {}
+
+            def create_session() -> None:
+                create_response["payload"] = client.post(
+                    "/v1/talk/session",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    json={"provider": "codex_live"},
+                )
+
+            thread = Thread(target=create_session)
+            thread.start()
+            rpc = websocket.receive_json()
+            assert rpc["method"] == "talk.session.create"
+            assert rpc["params"]["provider"] == "codex_live"
+
+            websocket.send_json(
+                {
+                    "type": "rpc.response",
+                    "requestId": rpc["requestId"],
+                    "success": True,
+                    "result": {
+                        "clientSecret": None,
+                        "expiresAt": None,
+                        "session": {},
+                        "model": "gpt-live-1-codex",
+                        "voice": "cove",
+                        "provider": "codex_live",
+                        "relayMcpURL": "https://relay.example.test/v1/talk/mcp?token=test",
+                    },
+                }
+            )
+            thread.join(timeout=5)
+
+            assert create_response["payload"].status_code == 200
+            bootstrap = create_response["payload"].json()["data"]["bootstrap"]
+            assert bootstrap["provider"] == "codex_live"
+            assert bootstrap["model"] == "gpt-live-1-codex"
+            assert bootstrap["voice"] == "cove"
+
+
 def test_talk_session_create_rejects_unknown_provider(tmp_path):
     with build_client(tmp_path) as client:
         connector_data = setup_connector(client)
