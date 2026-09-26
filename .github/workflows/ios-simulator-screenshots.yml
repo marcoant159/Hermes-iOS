@@ -1,0 +1,115 @@
+name: Simulator screenshots
+
+# Roda o app no iOS Simulator do runner macOS (Apple Silicon, com Metal) e
+# publica screenshots das telas principais + vídeo da execução como artifact.
+# Substitui o Simulator da VM macOS do notebook, que não tem GPU (tela preta).
+# O tour fica em HermesMobileUITests/ScreenshotTourUITests.swift e usa o
+# pareamento falso (UITEST_PAIRING_MODE=mock) — não toca no relay real.
+# Disparo: gh workflow run "Simulator screenshots" -R marcoant159/Hermes-iOS --ref <branch>
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: "Simulador (nome exato; vazio = primeiro iPhone Pro disponível)"
+        required: false
+      appearance:
+        description: "light ou dark"
+        required: false
+        default: light
+
+jobs:
+  screenshots:
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app
+          xcodebuild -version
+
+      - name: Escolher e iniciar o simulador
+        id: sim
+        run: |
+          set -euo pipefail
+          WANT="${{ inputs.device }}"
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          want = sys.argv[1]
+          devs = [d for rt, ds in json.load(sys.stdin)["devices"].items() if "iOS" in rt for d in ds]
+          pick = [d for d in devs if d["name"] == want] if want else []
+          pick = pick or [d for d in devs if d["name"].startswith("iPhone") and "Pro" in d["name"]] or [d for d in devs if d["name"].startswith("iPhone")]
+          print(pick[-1]["udid"])
+          ' "$WANT")
+          xcrun simctl list devices | grep "$UDID"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl ui "$UDID" appearance "${{ inputs.appearance || 'light' }}"
+          xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Build + tour de screenshots
+        env:
+          UDID: ${{ steps.sim.outputs.udid }}
+        run: |
+          set -o pipefail
+          xcrun simctl io "$UDID" recordVideo --codec h264 --force "$RUNNER_TEMP/tour.mp4" &
+          REC=$!
+          xcodebuild test \
+            -project HermesMobile.xcodeproj \
+            -scheme HermesMobile \
+            -configuration Debug \
+            -destination "id=$UDID" \
+            -only-testing:HermesMobileUITests/ScreenshotTourUITests \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -resultBundlePath "$RUNNER_TEMP/tour.xcresult" \
+            CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= CODE_SIGN_IDENTITY=- PROVISIONING_PROFILE_SPECIFIER= \
+            > "$RUNNER_TEMP/test.log" 2>&1
+          STATUS=$?
+          kill -INT "$REC" || true
+          wait "$REC" || true
+          if [ $STATUS -ne 0 ]; then
+            grep -nE "error:|failed|Failed" "$RUNNER_TEMP/test.log" | head -60 || true
+            tail -n 80 "$RUNNER_TEMP/test.log"
+          else
+            tail -n 15 "$RUNNER_TEMP/test.log"
+          fi
+          echo "status=$STATUS" >> "$GITHUB_ENV"
+
+      - name: Extrair screenshots do xcresult
+        if: always()
+        run: |
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/screenshots"
+          mkdir -p "$OUT"
+          [ -d "$RUNNER_TEMP/tour.xcresult" ] || { echo "sem xcresult"; exit 0; }
+          xcrun xcresulttool export attachments --path "$RUNNER_TEMP/tour.xcresult" --output-path "$RUNNER_TEMP/att"
+          python3 - "$RUNNER_TEMP/att" "$OUT" <<'EOF'
+          import json, os, re, shutil, sys
+          src, out = sys.argv[1], sys.argv[2]
+          for test in json.load(open(os.path.join(src, "manifest.json"))):
+              for a in test.get("attachments", []):
+                  name = a.get("suggestedHumanReadableName") or a["exportedFileName"]
+                  name = re.sub(r"_\d+_[0-9A-F-]{36}", "", name)
+                  shutil.copy(os.path.join(src, a["exportedFileName"]), os.path.join(out, name))
+                  print(name)
+          EOF
+          ls -la "$OUT"
+
+      - name: Publicar artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-screenshots-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/screenshots
+            ${{ runner.temp }}/tour.mp4
+            ${{ runner.temp }}/test.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Resultado do teste
+        run: exit ${{ env.status }}
