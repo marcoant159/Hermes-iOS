@@ -77,7 +77,7 @@ struct HermesMobileApp: App {
                     if newPhase == .active {
                         Task { await container.handleAppDidBecomeActive() }
                     } else if newPhase == .background {
-                        Task { await container.reportAppStateIfNeeded("background") }
+                        Task { await container.handleAppDidEnterBackground() }
                     }
                     // Note: voice sessions are NOT ended on background.
                     // The "audio" background mode keeps WebRTC alive so
