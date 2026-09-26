@@ -56,6 +56,10 @@ class Database:
             conversation_columns = {column["name"] for column in inspector.get_columns("conversations")}
             if "hermes_session_id" not in conversation_columns:
                 connection.execute(text("ALTER TABLE conversations ADD COLUMN hermes_session_id TEXT"))
+            if "is_active" not in conversation_columns:
+                connection.execute(
+                    text("ALTER TABLE conversations ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT true")
+                )
 
             message_columns = {column["name"] for column in inspector.get_columns("messages")}
             if "delivery_status" not in message_columns:
@@ -114,6 +118,12 @@ class Database:
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_conversations_user_archived "
                     "ON conversations (user_id, is_archived)"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_conversations_user_active "
+                    "ON conversations (user_id, is_active)"
                 )
             )
 

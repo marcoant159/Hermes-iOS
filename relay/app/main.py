@@ -47,6 +47,7 @@ from .schemas import (
 from .security import AuthContext, get_auth_context, get_db, get_settings, require_internal_key
 from .services import (
     activate_hermes_host_connection,
+    active_push_registrations_for_user,
     append_message,
     archive_current_conversation,
     authenticate_hermes_host,
@@ -54,27 +55,29 @@ from .services import (
     claim_next_message_job,
     complete_message_job,
     conversation_history_before_message,
-    create_phone_pairing_code,
-    create_voice_session,
+    create_empty_conversation,
     create_host_enrollment_invite,
     create_inbox_item,
     create_message_job,
+    create_phone_pairing_code,
+    create_voice_session,
     current_hermes_host_for_user,
-    active_push_registrations_for_user,
     deactivate_hermes_host_connection,
     device_is_foreground,
     end_voice_session,
     ensure_default_user,
     fail_message_job,
+    get_current_conversation,
     get_inbox_item_for_user,
     get_message_job,
     get_message_job_for_user_message,
     get_or_create_current_conversation,
-    get_voice_session,
-    inject_voice_transcript,
     get_user_message_by_client_message_id,
+    get_voice_session,
     hermes_host_is_online,
+    inject_voice_transcript,
     list_conversation_messages,
+    list_conversations_for_user,
     list_inbox_actions,
     list_inbox_items,
     list_message_jobs_for_conversation,
@@ -87,7 +90,9 @@ from .services import (
     revoke_auth_session,
     revoke_current_hermes_host,
     rotate_auth_session,
+    select_conversation,
     serialize_conversation,
+    serialize_conversation_summary,
     serialize_hermes_host,
     serialize_inbox_item,
     serialize_message,
@@ -1519,6 +1524,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         db.commit()
         return success({"conversation": serialize_conversation(conversation, messages)})
+
+    @app.get("/v1/conversations")
+    def list_conversations(
+        limit: int = 50,
+        auth: AuthContext = Depends(get_auth_context),
+        db: Session = Depends(get_db),
+    ) -> dict:
+        safe_limit = max(1, min(limit, 50))
+        rows = list_conversations_for_user(db, user_id=auth.user.id, limit=safe_limit)
+        return success(
+            {
+                "conversations": [
+                    serialize_conversation_summary(conversation, message_count=count)
+                    for conversation, count in rows
+                ]
+            }
+        )
+
+    @app.post("/v1/conversations")
+    def create_conversation(
+        auth: AuthContext = Depends(get_auth_context),
+        db: Session = Depends(get_db),
+    ) -> dict:
+        conversation = create_empty_conversation(db, user_id=auth.user.id)
+        record_audit(
+            db,
+            actor_type="user",
+            actor_id=auth.user.id,
+            action="chat.conversation.create",
+            entity_type="conversation",
+            entity_id=conversation.id,
+        )
+        db.commit()
+        return success({"conversation": serialize_conversation(conversation, [])})
+
+    @app.post("/v1/conversations/{conversation_id}/select")
+    def select_current_conversation(
+        conversation_id: str,
+        auth: AuthContext = Depends(get_auth_context),
+        db: Session = Depends(get_db),
+    ) -> dict:
+        conversation = select_conversation(db, user_id=auth.user.id, conversation_id=conversation_id)
+        if conversation is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+        messages = list_conversation_messages(db, conversation_id=conversation.id)
+        jobs = list_message_jobs_for_conversation(db, conversation_id=conversation.id)
+        record_audit(
+            db,
+            actor_type="user",
+            actor_id=auth.user.id,
+            action="chat.conversation.select",
+            entity_type="conversation",
+            entity_id=conversation.id,
+        )
+        db.commit()
+        return success({"conversation": serialize_conversation(conversation, messages, jobs=jobs)})
 
     @app.post("/v1/messages")
     async def create_message(
