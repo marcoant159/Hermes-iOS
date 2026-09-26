@@ -196,6 +196,10 @@ from .state import (
     RealtimeTalkConfig,
 )
 from .talk_support import (
+    CODEX_LIVE_ALPHA_HEADER,
+    CODEX_LIVE_CALLS_URL,
+    CODEX_LIVE_MODEL,
+    CODEX_LIVE_VOICE,
     CODEX_ORIGINATOR,
     CODEX_REALTIME_CALLS_URL,
     CODEX_REALTIME_MODEL,
@@ -532,10 +536,10 @@ class HermesMobileConnector:
         configured = has_codex_credentials or google_live_ready or openai_ready
 
         if has_codex_credentials:
-            provider = "codex_realtime"
-            preferred_models = [CODEX_REALTIME_MODEL]
-            selected_model = CODEX_REALTIME_MODEL
-            voice = CODEX_REALTIME_VOICE
+            provider = "codex_live"
+            preferred_models = [CODEX_LIVE_MODEL, CODEX_REALTIME_MODEL]
+            selected_model = CODEX_LIVE_MODEL
+            voice = CODEX_LIVE_VOICE
             validation_error = None
         elif google_live_ready:
             provider = "gemini_live"
@@ -1102,6 +1106,15 @@ class HermesMobileConnector:
             config=config,
         )
 
+        if provider == "codex_live":
+            return self._create_codex_live_session(
+                credentials=codex_credentials,
+                voice_session_id=voice_session_id,
+                instructions=snapshot.system_prompt,
+                relay_mcp_url=relay_mcp_url,
+                snapshot_updated_at=snapshot.updated_at,
+            )
+
         if provider == "codex_realtime":
             return self._create_codex_realtime_session(
                 credentials=codex_credentials,
@@ -1171,6 +1184,12 @@ class HermesMobileConnector:
         openai_ready: bool,
         config: RealtimeTalkConfig,
     ) -> str:
+        if requested == "codex_live":
+            if not codex_ready:
+                raise RuntimeError(
+                    "Codex Live is not available: no valid Codex OAuth credentials were found on this Hermes host."
+                )
+            return "codex_live"
         if requested == "codex_realtime":
             if not codex_ready:
                 raise RuntimeError(
@@ -1190,9 +1209,9 @@ class HermesMobileConnector:
         if requested not in {"", "auto"}:
             raise RuntimeError(f"Unsupported talk provider: {requested}")
 
-        # Auto preference: Codex OAuth > Gemini Live > OpenAI API key.
+        # Auto preference: Codex Live > Codex Realtime > Gemini Live > OpenAI API key.
         if codex_ready:
-            return "codex_realtime"
+            return "codex_live"
         if gemini_ready:
             return "gemini_live"
         if openai_ready:
@@ -1228,6 +1247,7 @@ class HermesMobileConnector:
         if voice_session_id:
             self._codex_realtime_sessions[voice_session_id] = {
                 "session": session_definition,
+                "kind": "realtime",
                 "created_at": time.monotonic(),
             }
 
@@ -1242,16 +1262,67 @@ class HermesMobileConnector:
             "voiceContextUpdatedAt": snapshot_updated_at,
         }
 
+    CODEX_LIVE_DELEGATION_INSTRUCTIONS = (
+        "Quando o usuário pedir algo que exija dados, ações ou ferramentas "
+        "(fazenda, reservatórios, sensores, Inttegra, agenda, e-mail, arquivos etc.), "
+        "delegue. Fale sempre em português do Brasil, de forma breve."
+    )
+
+    def _create_codex_live_session(
+        self,
+        *,
+        credentials: CodexCredentials | None,
+        voice_session_id: str,
+        instructions: str,
+        relay_mcp_url: str,
+        snapshot_updated_at: str,
+    ) -> dict:
+        if credentials is None:
+            raise RuntimeError(
+                "Codex Live is not available: no valid Codex OAuth credentials were found on this Hermes host."
+            )
+
+        # Frameless/quicksilver (V3) session shape: no `type`, no `tools`, no
+        # `output_modalities`, no `audio.input` — the backend rejects/ignores them.
+        session_definition = {
+            "instructions": f"{instructions}\n\n{self.CODEX_LIVE_DELEGATION_INSTRUCTIONS}",
+            "model": CODEX_LIVE_MODEL,
+            "audio": {"output": {"voice": CODEX_LIVE_VOICE}},
+            "delegation": {"type": "client", "ack_filler": True},
+        }
+
+        if voice_session_id:
+            self._codex_realtime_sessions[voice_session_id] = {
+                "session": session_definition,
+                "kind": "live",
+                "created_at": time.monotonic(),
+            }
+
+        return {
+            "clientSecret": None,
+            "expiresAt": None,
+            "session": {},
+            "model": CODEX_LIVE_MODEL,
+            "voice": CODEX_LIVE_VOICE,
+            "provider": "codex_live",
+            "relayMcpURL": relay_mcp_url,
+            "voiceContextUpdatedAt": snapshot_updated_at,
+        }
+
     _CODEX_REALTIME_SESSION_TTL_SECONDS = 600.0
 
-    def _codex_realtime_session_definition(self, voice_session_id: str) -> dict | None:
+    def _codex_talk_session_entry(self, voice_session_id: str) -> dict | None:
         entry = self._codex_realtime_sessions.get(voice_session_id)
         if entry is None:
             return None
         if time.monotonic() - float(entry.get("created_at") or 0.0) > self._CODEX_REALTIME_SESSION_TTL_SECONDS:
             self._codex_realtime_sessions.pop(voice_session_id, None)
             return None
-        return entry.get("session")
+        return entry
+
+    def _codex_realtime_session_definition(self, voice_session_id: str) -> dict | None:
+        entry = self._codex_talk_session_entry(voice_session_id)
+        return entry.get("session") if entry is not None else None
 
     def _rpc_talk_sdp_exchange(self, params: dict) -> dict:
         voice_session_id = str(params.get("voiceSessionId") or "").strip()
@@ -1261,41 +1332,61 @@ class HermesMobileConnector:
         if not isinstance(sdp, str) or not sdp.strip():
             raise RuntimeError("A non-empty SDP offer is required.")
 
-        session_definition = self._codex_realtime_session_definition(voice_session_id)
+        entry = self._codex_talk_session_entry(voice_session_id)
+        if entry is None:
+            raise RuntimeError("Talk SDP session not found or expired.")
+        session_definition = entry.get("session")
         if session_definition is None:
             raise RuntimeError("Talk SDP session not found or expired.")
+        kind = entry.get("kind") or "realtime"
 
         state = self.state_store.load()
         credentials = self._codex_credentials_for_state(state)
         if credentials is None:
             raise RuntimeError("Codex OAuth credentials are no longer available.")
 
+        if kind == "live":
+            url = CODEX_LIVE_CALLS_URL
+            error_label = "Codex Live"
+            headers = {
+                "Authorization": f"Bearer {credentials.access_token}",
+                "ChatGPT-Account-Id": credentials.account_id,
+                "originator": CODEX_ORIGINATOR,
+                "User-Agent": CODEX_USER_AGENT,
+                "Content-Type": "application/json",
+                "OpenAI-Alpha": CODEX_LIVE_ALPHA_HEADER,
+            }
+        else:
+            url = CODEX_REALTIME_CALLS_URL
+            error_label = "Codex Realtime"
+            headers = {
+                "Authorization": f"Bearer {credentials.access_token}",
+                "ChatGPT-Account-Id": credentials.account_id,
+                "originator": CODEX_ORIGINATOR,
+                "User-Agent": CODEX_USER_AGENT,
+                "Content-Type": "application/json",
+            }
+
         try:
             response = httpx.post(
-                CODEX_REALTIME_CALLS_URL,
-                headers={
-                    "Authorization": f"Bearer {credentials.access_token}",
-                    "ChatGPT-Account-Id": credentials.account_id,
-                    "originator": CODEX_ORIGINATOR,
-                    "User-Agent": CODEX_USER_AGENT,
-                    "Content-Type": "application/json",
-                },
+                url,
+                headers=headers,
                 json={"sdp": sdp, "session": session_definition},
                 timeout=20.0,
             )
         except Exception as error:  # noqa: BLE001
-            raise RuntimeError(f"Codex Realtime SDP exchange failed: {error}") from error
+            raise RuntimeError(f"{error_label} SDP exchange failed: {error}") from error
 
         if response.status_code >= 400:
             excerpt = " ".join((response.text or "").split())[:300]
             raise RuntimeError(
-                "Codex Realtime SDP exchange failed with HTTP "
+                f"{error_label} SDP exchange failed with HTTP "
                 f"{response.status_code}: {excerpt or 'no response body'}"
             )
 
         answer = response.text or ""
         if not answer.strip():
-            raise RuntimeError("Codex Realtime returned an empty SDP answer.")
+            raise RuntimeError(f"{error_label} returned an empty SDP answer.")
 
         location = response.headers.get("Location") or ""
         call_id = location.rstrip("/").rsplit("/", 1)[-1] if location else None
