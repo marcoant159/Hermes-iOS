@@ -184,7 +184,7 @@ class VoiceTurnCreateRequest(BaseModel):
 class TalkSessionCreateRequest(BaseModel):
     provider: str | None = Field(
         default=None,
-        pattern="^(auto|codex_realtime|gemini_live|openai_realtime)$",
+        pattern="^(auto|codex_live|codex_realtime|gemini_live|openai_realtime)$",
     )
 
 

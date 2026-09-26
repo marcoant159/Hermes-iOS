@@ -117,7 +117,13 @@ final class TalkStore {
             await voiceService.refreshReadiness()
             applySnapshot(voiceService.snapshot)
             if canStartSession {
-                await voiceService.startSession(providerOverride: providerOverride)
+                // Retry with the connector's own provider resolution ("auto") when
+                // the forced provider was rejected (e.g. a relay that predates
+                // `codex_live` passthrough returns 422). The connector still
+                // prefers `codex_live` whenever Codex credentials are present, so
+                // the injected-delegation flow is preserved.
+                let retryProvider = providerOverride == "codex_live" ? "auto" : providerOverride
+                await voiceService.startSession(providerOverride: retryProvider)
                 applySnapshot(voiceService.snapshot)
             }
         }

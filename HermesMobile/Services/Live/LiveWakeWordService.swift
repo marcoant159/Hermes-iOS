@@ -67,6 +67,11 @@ final class LiveWakeWordService {
     /// Silence after the last recognized word that closes the wake activation.
     /// A bare "oi hermes" also opens the session after this window.
     private static let silenceToFinishCommand: TimeInterval = 1.6
+    /// Short probe used right after a bare "oi hermes" with no command yet: if no
+    /// further speech arrives, open the session immediately instead of waiting the
+    /// full command window. This is what makes the wake activation feel instant;
+    /// anything the user says next is picked up by the GPT Live session itself.
+    private static let bareWakeSilence: TimeInterval = 0.6
     /// Hard cap for a single spoken command.
     private static let maxCommandSeconds: TimeInterval = 20
     /// Ignore transcripts for this long after resuming (own-speech tail).
@@ -386,11 +391,21 @@ final class LiveWakeWordService {
         guard isRunning, capturing else { return }
         let idle = Date().timeIntervalSince(lastTextAt)
         let elapsed = Date().timeIntervalSince(captureStartedAt)
-        // A bare "oi hermes" opens the session after the same short silence used
-        // to close a command, so the user can just start talking to GPT Live.
-        if idle >= Self.silenceToFinishCommand || elapsed >= Self.maxCommandSeconds {
+        // A bare "oi hermes" opens the session as soon as the short probe elapses;
+        // a same-utterance command keeps the longer window so the user can finish
+        // speaking before the GPT Live session takes over the microphone.
+        let threshold = hasCapturedCommand ? Self.silenceToFinishCommand : Self.bareWakeSilence
+        if idle >= threshold || elapsed >= Self.maxCommandSeconds {
             await finalizeCommand()
         }
+    }
+
+    /// `true` once any text after the wake phrase has been recognized for the
+    /// current activation (either already committed or still partial).
+    private var hasCapturedCommand: Bool {
+        !Self.join(committedCommand, currentSegmentText)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
     }
 
     private func finalizeCommand() async {

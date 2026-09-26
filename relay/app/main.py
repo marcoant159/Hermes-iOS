@@ -9,6 +9,15 @@ import logging
 import uuid
 
 logger = logging.getLogger("hermes.relay")
+# uvicorn only configures its own loggers and leaves the root logger at WARNING,
+# so application ``logger.info`` calls (e.g. wake word events) would otherwise be
+# dropped. Attach a handler once so on-device diagnostics are visible in the
+# container logs.
+if not logger.handlers:
+    _relay_handler = logging.StreamHandler()
+    _relay_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+    logger.addHandler(_relay_handler)
+    logger.setLevel(logging.INFO)
 
 # Async talk delegations are kept in memory for this long after creation.
 TALK_DELEGATION_TTL_SECONDS = 30 * 60
