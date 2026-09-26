@@ -45,8 +45,33 @@ Nada mais foi alterado. `git diff` confirmou 5 linhas `uses:` alteradas, mais na
 
 ## 3. Validação
 
-- [ ] `Build unsigned IPA` (workflow_dispatch, ref wip/actions-node24): verde, artifact presente, sem aviso Node 20
-- [ ] `Simulator screenshots` (workflow_dispatch, ref wip/actions-node24): verde, artifact presente, sem aviso Node 20
-- [ ] `TestFlight`: apenas leitura (mesmas actions; NÃO disparar)
+Push: `git push fork HEAD:wip/actions-node24` (commit `23a15d3`).
 
-(pendente — aguardando push/CI)
+### `Build unsigned IPA` — run 36277835966 — ✅ success (2m1s)
+- Todos os steps verdes: `Run actions/checkout@v7`, Build, Empacotar IPA,
+  `Publicar artifact`, `Post Run actions/checkout@v7`.
+- Artifact: `HermesMobile-unsigned-ipa` (14.503.601 bytes, não expirado).
+- Annotations do check-run `build-ipa` (108503884643): **vazio** → aviso de Node 20 sumiu.
+
+### `Simulator screenshots` — run 36277954988 — ✅ success (8m12s)
+- Disparado com `-f appearance=dark`. Steps verdes: `Run actions/checkout@v7`,
+  Build + tour, Extrair screenshots, `Publicar artifact`.
+- Artifact: `simulator-screenshots-5` (28.041.227 bytes), contendo 9 PNGs
+  (01-onboarding … 09-host), `tour.mp4` e `test.log`.
+- `test.log`: `Executed 1 test, with 0 failures (0 unexpected)`; nenhum `error:`.
+- Annotations do check-run `screenshots` (108504221941): **vazio** → aviso de Node 20 sumiu.
+
+### `TestFlight` — validação por leitura (NÃO disparado)
+- Únicas actions do arquivo: `actions/checkout@v4 → @v7`. Mesma versão já validada
+  nos outros dois workflows (o `upload-artifact` não é usado aqui).
+- A mudança de `persist-credentials` do checkout v6+ é compatível: o workflow só
+  faz checkout do próprio repo e não usa `persist-credentials`.
+
+## 4. Conclusão
+
+- O que mudou: 5 linhas `uses:` (checkout v4→v7 e upload-artifact v4→v7) nos 3
+  workflows + `REPORT-actions-node24.md`.
+- Como foi validado: runs de CI reais no fork (Build IPA e Simulator screenshots)
+  verdes, artifacts presentes, sem annotations de deprecação de Node 20; TestFlight
+  verificado por leitura.
+- Pendente: nada. Todos os workflows ficam aptos a rodar em Node 24.
