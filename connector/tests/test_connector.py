@@ -4,8 +4,11 @@ import asyncio
 import base64
 import json
 import sys
+import threading
+import time
 
 from hermes_mobile_connector.client import HermesMobileConnector
+from hermes_mobile_connector.hermes_api_executor import HermesAPIExecutor
 from hermes_mobile_connector.hermes_runner import ConnectorHermesSettings, HermesCLIExecutor
 from hermes_mobile_connector.mcp_registration import (
     MCPRegistrationStatus,
@@ -940,7 +943,169 @@ def test_rpc_talk_delegate_supports_neutral_and_legacy_method_names(monkeypatch,
     assert neutral_response["result"]["text"] == "Delegated reply"
     assert legacy_response["success"] is True
     assert legacy_response["result"]["text"] == "Delegated reply"
-    assert captured_prompts == ["Use tools", "Use tools again"]
+    assert len(captured_prompts) == 2
+    assert captured_prompts[0].startswith("Pergunta: Use tools")
+    assert captured_prompts[1].startswith("Pergunta: Use tools again")
+    assert "português do Brasil" in captured_prompts[0]
+
+
+def _delegate_connector(tmp_path, name: str) -> HermesMobileConnector:
+    store = ConnectorStateStore(state_dir=tmp_path / name)
+    store.save(
+        ConnectorState(
+            relay_url="https://relay.example.com/v1",
+            web_socket_url="wss://relay.example.com/v1/hosts/ws",
+            user_id="user-123",
+            host_id="host-123",
+            connector_credential="secret-token",
+        )
+    )
+    return HermesMobileConnector(state_store=store, executor=make_executor())
+
+
+def test_voice_delegations_do_not_reuse_session_and_run_in_parallel(monkeypatch, tmp_path):
+    connector = _delegate_connector(tmp_path, "connector-voice-parallel")
+    session_ids: list[str | None] = []
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    class OverlappingAdapter:
+        def delegate_talk_turn(self, *, prompt, session_id=None):  # noqa: ANN001
+            nonlocal active, max_active
+            session_ids.append(session_id)
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.5)
+            with lock:
+                active -= 1
+            return type("Result", (), {"text": f"reply:{prompt}", "session_id": "sess-1"})()
+
+    async def fake_runtime_adapter_async(state):  # noqa: ANN001, ARG001
+        return OverlappingAdapter()
+
+    monkeypatch.setattr(connector, "runtime_adapter_for_state_async", fake_runtime_adapter_async)
+
+    async def run_both() -> None:
+        await asyncio.gather(
+            connector._rpc_talk_delegate(  # noqa: SLF001
+                {"voiceSessionId": "voice-1", "prompt": "Pergunta A"}
+            ),
+            connector._rpc_talk_delegate(  # noqa: SLF001
+                {"voiceSessionId": "voice-1", "prompt": "Pergunta B"}
+            ),
+        )
+
+    asyncio.run(run_both())
+
+    # Both delegations were in flight at the same time (not serialized) and
+    # neither reused a Hermes session from the other.
+    assert max_active == 2
+    assert session_ids == [None, None]
+
+
+def test_voice_delegate_runtime_pins_fast_api_model(monkeypatch, tmp_path):
+    connector = _delegate_connector(tmp_path, "connector-voice-api-model")
+    executor = HermesAPIExecutor(api_server_url="http://localhost:8642")
+    runtime = HermesAPIRuntimeAdapter(executor)
+
+    monkeypatch.setenv("HERMES_VOICE_DELEGATE_PROVIDER", "opencode-go")
+    monkeypatch.setenv("HERMES_VOICE_DELEGATE_MODEL", "deepseek-v4.1-flash")
+    monkeypatch.setenv("HERMES_VOICE_DELEGATE_REASONING", "low")
+
+    pinned = connector._voice_delegate_runtime(connector.state_store.load(), runtime)  # noqa: SLF001
+
+    assert isinstance(pinned, HermesAPIRuntimeAdapter)
+    assert pinned.executor.provider == "opencode-go"
+    assert pinned.executor.model == "deepseek-v4.1-flash"
+    assert pinned.executor.model_options == {"reasoning_effort": "low"}
+
+
+def test_voice_delegate_model_defaults(monkeypatch, tmp_path):
+    connector = _delegate_connector(tmp_path, "connector-voice-defaults")
+    monkeypatch.delenv("HERMES_VOICE_DELEGATE_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_VOICE_DELEGATE_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_VOICE_DELEGATE_REASONING", raising=False)
+
+    assert connector._voice_delegate_model_config() == (  # noqa: SLF001
+        "opencode-go",
+        "deepseek-v4.1-flash",
+        "low",
+    )
+
+
+def test_voice_delegate_runtime_pins_fast_cli_model(monkeypatch, tmp_path):
+    connector = _delegate_connector(tmp_path, "connector-voice-cli-model")
+    monkeypatch.setenv("HERMES_VOICE_DELEGATE_PROVIDER", "opencode-go")
+    monkeypatch.setenv("HERMES_VOICE_DELEGATE_MODEL", "deepseek-v4.1-flash")
+
+    runtime = HermesRuntimeAdapter(make_executor())
+    pinned = connector._voice_delegate_runtime(connector.state_store.load(), runtime)  # noqa: SLF001
+
+    assert isinstance(pinned, HermesRuntimeAdapter)
+    assert pinned.executor.settings.hermes_provider == "opencode-go"
+    assert pinned.executor.settings.hermes_model == "deepseek-v4.1-flash"
+
+
+def test_voice_delegate_prompt_includes_recent_turns(monkeypatch, tmp_path):
+    connector = _delegate_connector(tmp_path, "connector-voice-recent-turns")
+    captured_prompts: list[str] = []
+
+    class FakeAdapter:
+        def delegate_talk_turn(self, *, prompt, session_id=None):  # noqa: ANN001
+            captured_prompts.append(prompt)
+            return type("Result", (), {"text": "ok", "session_id": None})()
+
+    async def fake_runtime_adapter_async(state):  # noqa: ANN001, ARG001
+        return FakeAdapter()
+
+    monkeypatch.setattr(connector, "runtime_adapter_for_state_async", fake_runtime_adapter_async)
+
+    recent_turns = [
+        {"role": "user", "text": f"fala {index}"} for index in range(9)
+    ]
+    recent_turns.append({"role": "assistant", "text": "resposta do Hermes"})
+
+    asyncio.run(
+        connector._rpc_talk_delegate(  # noqa: SLF001
+            {
+                "voiceSessionId": "voice-1",
+                "prompt": "Como estão os sensores?",
+                "recentTurns": recent_turns,
+            }
+        )
+    )
+
+    prompt = captured_prompts[0]
+    assert "[Conversa de voz recente]" in prompt
+    assert "[Fim]" in prompt
+    assert "Usuário: fala 0" not in prompt  # only the last 8 turns are kept
+    assert "Usuário: fala 1" not in prompt
+    assert "Usuário: fala 2" in prompt
+    assert "Hermes: resposta do Hermes" in prompt
+    assert "Pergunta: Como estão os sensores?" in prompt
+    assert "português do Brasil" in prompt
+    assert prompt.index("[Fim]") < prompt.index("Pergunta:")
+
+
+def test_hermes_api_payload_includes_model_options():
+    executor = HermesAPIExecutor(
+        provider="opencode-go",
+        model="deepseek-v4.1-flash",
+        model_options={"reasoning_effort": "low"},
+    )
+
+    payload = executor._build_payload(  # noqa: SLF001
+        stream=False,
+        latest_user_message="Oi",
+        history=None,
+        attachments=None,
+    )
+
+    assert payload["provider"] == "opencode-go"
+    assert payload["model"] == "deepseek-v4.1-flash"
+    assert payload["model_options"] == {"reasoning_effort": "low"}
 
 
 def test_native_mcp_readiness_requires_reload_when_chat_process_is_running(monkeypatch):

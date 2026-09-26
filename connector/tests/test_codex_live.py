@@ -146,9 +146,13 @@ def test_talk_session_create_builds_exact_live_definition(
     assert definition == {
         "instructions": (
             "System prompt\n\n"
-            "Quando o usuário pedir algo que exija dados, ações ou ferramentas "
-            "(fazenda, reservatórios, sensores, Inttegra, agenda, e-mail, arquivos etc.), "
-            "delegue. Fale sempre em português do Brasil, de forma breve."
+            "Responda você mesmo, sem delegar, a conversa, cumprimentos, perguntas "
+            "sobre a própria conversa, sobre o andamento de consultas e conhecimento "
+            "geral. Delegue ao Hermes SOMENTE quando precisar de dados, ferramentas ou "
+            "ações (fazenda, sensores, servidores, Inttegra, agenda, e-mail, arquivos). "
+            "Você pode continuar conversando enquanto uma consulta está em andamento; "
+            "quando o resultado chegar, diga a qual pergunta ele responde. Fale sempre "
+            "em português do Brasil, de forma breve."
         ),
         "model": CODEX_LIVE_MODEL,
         "audio": {"output": {"voice": CODEX_LIVE_VOICE}},
