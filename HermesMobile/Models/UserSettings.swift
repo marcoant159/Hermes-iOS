@@ -327,7 +327,6 @@ enum ChatModelChoice: String, Codable, CaseIterable, Hashable, Sendable, Identif
     case hermesDefault
     case gpt6Luna
     case gpt6Astra
-    case gpt56Luna
     case gemini38Flash
     case deepseekV41Flash
 
@@ -338,7 +337,6 @@ enum ChatModelChoice: String, Codable, CaseIterable, Hashable, Sendable, Identif
         case .hermesDefault: "Hermes padrão (GPT-6 Luna)"
         case .gpt6Luna: "GPT-6 Luna"
         case .gpt6Astra: "GPT-6 Astra"
-        case .gpt56Luna: "GPT-5.6 Luna"
         case .gemini38Flash: "Gemini 3.8 Flash"
         case .deepseekV41Flash: "DeepSeek V4.1 Flash"
         }
@@ -349,7 +347,6 @@ enum ChatModelChoice: String, Codable, CaseIterable, Hashable, Sendable, Identif
         case .hermesDefault: nil
         case .gpt6Luna: "openai-codex/gpt-6-luna"
         case .gpt6Astra: "openai-codex/gpt-6-astra"
-        case .gpt56Luna: "openai-codex/gpt-5.6-luna"
         case .gemini38Flash: "gemini/gemini-3.8-flash"
         case .deepseekV41Flash: "opencode-go/deepseek-v4.1-flash"
         }

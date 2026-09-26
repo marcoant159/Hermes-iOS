@@ -211,6 +211,20 @@ struct AppStoresTests {
             return conversation
         }
 
+        func createConversation() async throws -> Conversation {
+            let conversation = Conversation(title: "Nova conversa")
+            currentConversation = conversation
+            return conversation
+        }
+
+        func selectConversation(id: UUID) async throws -> Conversation {
+            currentConversation ?? Conversation(id: id, title: "Hermes")
+        }
+
+        func listConversations() async throws -> [ConversationSummary] {
+            []
+        }
+
         func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
             currentConversation ?? Conversation(title: "Hermes")
         }
@@ -445,6 +459,23 @@ struct AppStoresTests {
     }
 
     @Test @MainActor
+    func chatStoreSwitchesConversationOnCreateAndSelect() async throws {
+        let suiteName = "chat-store-switch-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let persistence = UserDefaultsAppPersistenceStore(defaults: defaults)
+        let hermesClient = RecordingHermesClient()
+        let chatStore = ChatStore(hermesClient: hermesClient, persistence: persistence)
+
+        try await chatStore.createConversation()
+        #expect(chatStore.conversation?.title == "Nova conversa")
+        #expect(chatStore.conversation?.messages.isEmpty == true)
+
+        try await chatStore.selectConversation(id: chatStore.conversation!.id)
+        #expect(persistence.loadConversationCache()?.title == "Nova conversa")
+    }
+
+    @Test @MainActor
     func chatStorePreservesStreamingArtifactsAfterConversationRefresh() async throws {
         final class StreamingArtifactClient: HermesClientProtocol {
             var connectionStatus: ConnectionStatus = .connected
@@ -511,6 +542,20 @@ struct AppStoresTests {
                 return conversation
             }
 
+            func createConversation() async throws -> Conversation {
+                let conversation = Conversation(title: "Nova conversa")
+                currentConversation = conversation
+                return conversation
+            }
+
+            func selectConversation(id: UUID) async throws -> Conversation {
+                currentConversation ?? Conversation(id: id, title: "Hermes")
+            }
+
+            func listConversations() async throws -> [ConversationSummary] {
+                []
+            }
+
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
                 currentConversation ?? Conversation(title: "Hermes")
             }
@@ -558,6 +603,20 @@ struct AppStoresTests {
 
             func clearConversation() async throws -> Conversation {
                 Conversation(title: "Hermes")
+            }
+
+            func createConversation() async throws -> Conversation {
+                let conversation = Conversation(title: "Nova conversa")
+                currentConversation = conversation
+                return conversation
+            }
+
+            func selectConversation(id: UUID) async throws -> Conversation {
+                currentConversation ?? Conversation(id: id, title: "Hermes")
+            }
+
+            func listConversations() async throws -> [ConversationSummary] {
+                []
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
@@ -613,6 +672,20 @@ struct AppStoresTests {
 
             func clearConversation() async throws -> Conversation {
                 Conversation(title: "Hermes")
+            }
+
+            func createConversation() async throws -> Conversation {
+                let conversation = Conversation(title: "Nova conversa")
+                currentConversation = conversation
+                return conversation
+            }
+
+            func selectConversation(id: UUID) async throws -> Conversation {
+                currentConversation ?? Conversation(id: id, title: "Hermes")
+            }
+
+            func listConversations() async throws -> [ConversationSummary] {
+                []
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
@@ -685,6 +758,20 @@ struct AppStoresTests {
 
             func clearConversation() async throws -> Conversation {
                 Conversation(title: "Hermes")
+            }
+
+            func createConversation() async throws -> Conversation {
+                let conversation = Conversation(title: "Nova conversa")
+                currentConversation = conversation
+                return conversation
+            }
+
+            func selectConversation(id: UUID) async throws -> Conversation {
+                currentConversation ?? Conversation(id: id, title: "Hermes")
+            }
+
+            func listConversations() async throws -> [ConversationSummary] {
+                []
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
@@ -927,6 +1014,20 @@ struct AppStoresTests {
                 Conversation(title: "Hermes")
             }
 
+            func createConversation() async throws -> Conversation {
+                let conversation = Conversation(title: "Nova conversa")
+                currentConversation = conversation
+                return conversation
+            }
+
+            func selectConversation(id: UUID) async throws -> Conversation {
+                currentConversation ?? Conversation(id: id, title: "Hermes")
+            }
+
+            func listConversations() async throws -> [ConversationSummary] {
+                []
+            }
+
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {
                 currentConversation ?? Conversation(title: "Hermes")
             }
@@ -1010,6 +1111,20 @@ struct AppStoresTests {
 
             func clearConversation() async throws -> Conversation {
                 Conversation(title: "Hermes")
+            }
+
+            func createConversation() async throws -> Conversation {
+                let conversation = Conversation(title: "Nova conversa")
+                currentConversation = conversation
+                return conversation
+            }
+
+            func selectConversation(id: UUID) async throws -> Conversation {
+                currentConversation ?? Conversation(id: id, title: "Hermes")
+            }
+
+            func listConversations() async throws -> [ConversationSummary] {
+                []
             }
 
             func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urlparse, urlunparse
 
 from fastapi import HTTPException, status
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -33,6 +33,20 @@ from .models import (
 )
 from .pairing import generate_phone_pairing_code, normalize_phone_pairing_code
 from .security import generate_token, hash_token, issue_tokens, normalize_datetime
+
+
+DEFAULT_CONVERSATION_TITLE = "Nova conversa"
+MAX_CONVERSATION_TITLE_LENGTH = 60
+
+
+def conversation_title_from_message(text: str) -> str:
+    """Derive a conversation title from its first user message."""
+    normalized = " ".join((text or "").split())
+    if not normalized:
+        return DEFAULT_CONVERSATION_TITLE
+    if len(normalized) > MAX_CONVERSATION_TITLE_LENGTH:
+        normalized = normalized[:MAX_CONVERSATION_TITLE_LENGTH].rstrip()
+    return normalized or DEFAULT_CONVERSATION_TITLE
 
 
 def ensure_default_user(db: Session, settings: Settings) -> User:
@@ -1006,16 +1020,40 @@ def default_action_titles(kind: str) -> tuple[str | None, str | None]:
     return None, "Dismiss"
 
 
-def get_or_create_current_conversation(db: Session, *, user_id: str) -> Conversation:
+def get_current_conversation(db: Session, *, user_id: str) -> Conversation | None:
+    """Return the user's active conversation, if any.
+
+    Prefers the explicitly selected conversation (``is_active``); falls back to
+    the newest non-archived conversation so installs upgraded with data but no
+    ``is_active`` flag yet keep working.
+    """
     conversation = db.scalar(
-        select(Conversation).where(
+        select(Conversation)
+        .where(
+            Conversation.user_id == user_id,
+            Conversation.is_archived.is_(False),
+            Conversation.is_active.is_(True),
+        )
+        .order_by(Conversation.updated_at.desc())
+    )
+    if conversation is not None:
+        return conversation
+
+    return db.scalar(
+        select(Conversation)
+        .where(
             Conversation.user_id == user_id,
             Conversation.is_archived.is_(False),
         )
+        .order_by(Conversation.updated_at.desc())
     )
 
+
+def get_or_create_current_conversation(db: Session, *, user_id: str) -> Conversation:
+    conversation = get_current_conversation(db, user_id=user_id)
+
     if conversation is None:
-        conversation = Conversation(user_id=user_id, title="Hermes")
+        conversation = Conversation(user_id=user_id, title="Hermes", is_active=True, is_archived=False)
         db.add(conversation)
         db.commit()
         db.refresh(conversation)
@@ -1024,22 +1062,92 @@ def get_or_create_current_conversation(db: Session, *, user_id: str) -> Conversa
 
 
 def archive_current_conversation(db: Session, *, user_id: str) -> Conversation | None:
-    conversation = db.scalar(
-        select(Conversation).where(
-            Conversation.user_id == user_id,
-            Conversation.is_archived.is_(False),
-        )
-    )
+    conversation = get_current_conversation(db, user_id=user_id)
 
     if conversation is None:
         return None
 
     conversation.is_archived = True
+    conversation.is_active = False
     conversation.hermes_session_id = None
     conversation.updated_at = utcnow()
     db.commit()
     db.refresh(conversation)
     return conversation
+
+
+def create_empty_conversation(db: Session, *, user_id: str, title: str | None = None) -> Conversation:
+    """Archive the current conversation and start a fresh, empty one.
+
+    The new conversation has no Hermes session id, so the next message starts
+    a brand-new agent session instead of resuming the previous one.
+    """
+    archive_current_conversation(db, user_id=user_id)
+    conversation = Conversation(
+        user_id=user_id,
+        title=(title or DEFAULT_CONVERSATION_TITLE),
+        is_active=True,
+        is_archived=False,
+    )
+    db.add(conversation)
+    db.commit()
+    db.refresh(conversation)
+    return conversation
+
+
+def select_conversation(db: Session, *, user_id: str, conversation_id: str) -> Conversation | None:
+    """Make an existing conversation the user's current one.
+
+    Returns ``None`` when the conversation does not exist or belongs to another
+    user (callers surface this as a 404).
+    """
+    conversation = db.get(Conversation, conversation_id)
+    if conversation is None or conversation.user_id != user_id:
+        return None
+
+    db.execute(
+        update(Conversation)
+        .where(
+            Conversation.user_id == user_id,
+            Conversation.is_active.is_(True),
+            Conversation.id != conversation_id,
+        )
+        .values(is_active=False)
+    )
+    conversation.is_active = True
+    conversation.is_archived = False
+    conversation.updated_at = utcnow()
+    db.commit()
+    db.refresh(conversation)
+    return conversation
+
+
+def list_conversations_for_user(db: Session, *, user_id: str, limit: int = 50) -> list[tuple[Conversation, int]]:
+    """Return the user's conversations (most recent first) with message counts.
+
+    Archived conversations are included — selecting one un-archives it, which
+    lets users return to a conversation they previously cleared.
+    """
+    message_count = func.count(Message.id)
+    rows = db.execute(
+        select(Conversation, message_count)
+        .outerjoin(Message, Message.conversation_id == Conversation.id)
+        .where(Conversation.user_id == user_id)
+        .group_by(Conversation.id)
+        .order_by(Conversation.updated_at.desc())
+        .limit(limit)
+    ).all()
+    return [(conversation, count) for conversation, count in rows]
+
+
+def serialize_conversation_summary(conversation: Conversation, *, message_count: int) -> dict:
+    return {
+        "id": conversation.id,
+        "title": conversation.title,
+        "updatedAt": conversation.updated_at,
+        "messageCount": message_count,
+        "isCurrent": bool(conversation.is_active and not conversation.is_archived),
+    }
 
 
 def list_conversation_messages(db: Session, *, conversation_id: str) -> list[Message]:
@@ -1107,6 +1215,8 @@ def append_message(
     )
     if created_at_override is not None:
         message.created_at = created_at_override
+    if role == "user" and conversation.title in {"Hermes", DEFAULT_CONVERSATION_TITLE}:
+        conversation.title = conversation_title_from_message(text)
     conversation.last_message_at = utcnow()
     conversation.updated_at = utcnow()
     db.add(message)

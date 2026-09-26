@@ -27,6 +27,18 @@ final class LiveHermesClient: HermesClientProtocol {
         let latestUsage: TokenUsage?
     }
 
+    private struct ConversationListResponse: Decodable {
+        let conversations: [RelayConversationSummary]
+    }
+
+    private struct RelayConversationSummary: Decodable {
+        let id: UUID
+        let title: String
+        let updatedAt: Date
+        let messageCount: Int
+        let isCurrent: Bool
+    }
+
     private struct RelayAttachment: Decodable {
         let type: String
         let filename: String
@@ -261,6 +273,50 @@ final class LiveHermesClient: HermesClientProtocol {
         currentConversation = conversation
         connectionStatus = .connected
         return conversation
+    }
+
+    func createConversation() async throws -> Conversation {
+        let response: ConversationResponse = try await performAuthorizedRequest { [self] token in
+            try await self.apiClient.post(
+                path: "conversations",
+                accessToken: token
+            )
+        }
+        let conversation = mapConversation(response.conversation)
+        currentConversation = conversation
+        connectionStatus = .connected
+        return conversation
+    }
+
+    func selectConversation(id: UUID) async throws -> Conversation {
+        let response: ConversationResponse = try await performAuthorizedRequest { [self] token in
+            try await self.apiClient.post(
+                path: "conversations/\(id.uuidString.lowercased())/select",
+                accessToken: token
+            )
+        }
+        let conversation = mapConversation(response.conversation)
+        currentConversation = conversation
+        connectionStatus = .connected
+        return conversation
+    }
+
+    func listConversations() async throws -> [ConversationSummary] {
+        let response: ConversationListResponse = try await performAuthorizedRequest { [self] token in
+            try await self.apiClient.get(
+                path: "conversations",
+                accessToken: token
+            )
+        }
+        return response.conversations.map { summary in
+            ConversationSummary(
+                id: summary.id,
+                title: summary.title,
+                updatedAt: summary.updatedAt,
+                messageCount: summary.messageCount,
+                isCurrent: summary.isCurrent
+            )
+        }
     }
 
     func injectVoiceTranscript(voiceSessionId: UUID) async throws -> Conversation {

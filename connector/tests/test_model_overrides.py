@@ -48,7 +48,14 @@ def test_parse_model_override_returns_none_without_override():
 
 @pytest.mark.parametrize(
     "override",
-    ["hermes-agent", "gemini-3.8", "openai-codex/gpt-4", "gpt-6-luna", "bogus/model"],
+    [
+        "hermes-agent",
+        "gemini-3.8",
+        "openai-codex/gpt-4",
+        "gpt-6-luna",
+        "openai-codex/gpt-5.6-luna",
+        "bogus/model",
+    ],
 )
 def test_parse_model_override_rejects_unsupported_values(override):
     with pytest.raises(ValueError):

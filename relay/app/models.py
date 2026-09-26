@@ -149,6 +149,10 @@ class Conversation(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False, default="Hermes")
     hermes_session_id: Mapped[str | None] = mapped_column(Text)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # User-selected "current" conversation. Exactly one conversation per user is
+    # active at a time (matching the legacy single-conversation behavior);
+    # is_archived is kept in sync for backwards compatibility.
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)

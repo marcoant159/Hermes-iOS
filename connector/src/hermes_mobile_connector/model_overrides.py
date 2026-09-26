@@ -10,7 +10,6 @@ from __future__ import annotations
 SUPPORTED_MODEL_OVERRIDES = frozenset({
     "openai-codex/gpt-6-luna",
     "openai-codex/gpt-6-astra",
-    "openai-codex/gpt-5.6-luna",
     "gemini/gemini-3.8-flash",
     "opencode-go/deepseek-v4.1-flash",
 })

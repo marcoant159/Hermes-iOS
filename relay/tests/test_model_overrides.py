@@ -32,7 +32,14 @@ def test_schema_defaults_to_no_override():
 
 @pytest.mark.parametrize(
     "override",
-    ["hermes-agent", "gemini-3.8", "openai-codex/gpt-4", "gpt-6-luna", ""],
+    [
+        "hermes-agent",
+        "gemini-3.8",
+        "openai-codex/gpt-4",
+        "gpt-6-luna",
+        "openai-codex/gpt-5.6-luna",
+        "",
+    ],
 )
 def test_schema_rejects_unsupported_overrides(override):
     with pytest.raises(ValidationError):
