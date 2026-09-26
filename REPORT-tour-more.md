@@ -31,7 +31,32 @@ telas de conversas, nova conversa, seletor de modelo e voz (numeração a partir
   `Tap "gpt-5.4-mini" Button` (model chip, via `matching(...).firstMatch`),
   `Tap "waveform" Button` (Start voice mode), `Tap "xmark" Button` (End voice session).
   Nenhum `error:` no log.
-- [ ] Validação no CI dark — run `36278813791` (branch `wip/tour-more`, `-f appearance=dark`).
+- [x] Validação no CI dark — run `36279532171` (branch `wip/tour-more`, `-f appearance=dark`), success.
+  Todos os 13 passos gerados e cada novo achou o elemento:
+  `Tap "BackButton" Button`, `Tap "list.bullet" Button` (Conversations),
+  `Tap "Done" Button`, `Tap "square.and.pencil" Button` (New conversation),
+  `Tap "gpt-5.4-mini" Button`, `Tap "waveform" Button` (Start voice mode),
+  `Tap "xmark" Button` (End voice session). `Executed 1 test, with 0 failures`.
+
+  Observação: a 1ª tentativa dark (`36278813791`) teve flakiness pré-existente do pareamento
+  (após "Connect Hermes" o "Continue" não apareceu, o app ficou na tela de pareamento e o tour
+  só gerou `01`,`02`,`04`). Reexecução passou limpa. O artifact do run dark de sucesso também
+  contém um `Crash Log ...ips` do **SpringBoard** (não do app), sem impacto no teste.
+
+### Screenshots gerados (`.tmp/run-<id>/*/screenshots/`)
+
+Light `36277944106` e dark `36279532171` geraram os mesmos nomes:
+
+`01-onboarding.png`, `02-pairing-code.png`, `03-after-pairing.png`, `04-chat.png`,
+`05-chat-typing.png`, `06-chat-reply.png`, `07-settings.png`, `08-settings-scrolled.png`,
+`09-host.png`, `10-conversations.png`, `11-new-conversation.png`, `12-model-picker.png`,
+`13-voice-mode.png`.
+
+Novos passos (confirmados visualmente nos PNGs):
+- `10-conversations`: sheet "Conversations" com toolbar New/Done.
+- `11-new-conversation`: chat após acionar o compose.
+- `12-model-picker`: popover com "MODEL FOR NEW MESSAGES" e Context Window.
+- `13-voice-mode`: `VoiceOverlayScreen` ("Hermes Voice", orb, "Listening").
 
 ### Notas de implementação
 
