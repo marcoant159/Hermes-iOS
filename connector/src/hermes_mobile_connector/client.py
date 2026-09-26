@@ -208,6 +208,7 @@ from .talk_support import (
     DEFAULT_REALTIME_MODELS,
     DEFAULT_REALTIME_VOICE,
     CodexCredentials,
+    build_minimal_voice_context_snapshot,
     build_voice_context_snapshot,
     load_codex_credentials,
 )
@@ -281,6 +282,10 @@ class HermesMobileConnector:
         # (talk.session.create, prewarm) are not stuck behind a long job.
         self._job_lock = asyncio.Lock()
         self._background_tasks: set[asyncio.Task] = set()
+        # Voice context rebuilds are expensive (Hermes CLI subprocesses). Run them
+        # one at a time in a worker thread so prewarm/readiness/session.create never
+        # block the event loop or stack up refreshes.
+        self._voice_refresh_task: asyncio.Task | None = None
 
     @property
     def sensor_store(self) -> SensorStore:
@@ -493,19 +498,54 @@ class HermesMobileConnector:
 
     _VOICE_CONTEXT_FRESH_SECONDS = 60.0  # prewarm rebuilds context; session create reuses if fresh
 
+    def _voice_snapshot_is_stale(self, snapshot) -> bool:
+        if snapshot is None or not snapshot.updated_at:
+            return True
+        try:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(snapshot.updated_at)).total_seconds()
+        except (ValueError, TypeError):
+            return True
+        return age >= self._VOICE_CONTEXT_FRESH_SECONDS
+
     def refresh_voice_context_if_stale(self, *, state: ConnectorState | None = None) -> ConnectorState:
-        """Refresh voice context only if the snapshot is older than _VOICE_CONTEXT_FRESH_SECONDS."""
+        """Refresh voice context only if the snapshot is older than _VOICE_CONTEXT_FRESH_SECONDS.
+
+        Blocking: only call from a worker thread or when the event loop can wait.
+        """
         state = state or self.state_store.load()
-        snapshot = state.voice_context_snapshot
-        if snapshot and snapshot.updated_at:
-            try:
-                from datetime import datetime, timezone
-                age = (datetime.now(timezone.utc) - datetime.fromisoformat(snapshot.updated_at)).total_seconds()
-                if age < self._VOICE_CONTEXT_FRESH_SECONDS:
-                    return state
-            except (ValueError, TypeError):
-                pass
+        if not self._voice_snapshot_is_stale(state.voice_context_snapshot):
+            return state
         return self.refresh_voice_context(state=state)
+
+    def schedule_voice_context_refresh_if_stale(self, *, state: ConnectorState | None = None) -> None:
+        """Kick off one background rebuild when the snapshot is stale or missing.
+
+        Never blocks and never stacks: while a refresh is in flight this is a
+        no-op. Must be called from the event loop thread so the task can be
+        created on the running loop.
+        """
+        try:
+            state = state or self.state_store.load()
+        except Exception:  # noqa: BLE001 — no state yet means no snapshot to refresh from
+            state = None
+        snapshot = state.voice_context_snapshot if state else None
+        if self._voice_snapshot_is_stale(snapshot):
+            self._schedule_voice_context_refresh()
+
+    def _schedule_voice_context_refresh(self) -> None:
+        if self._voice_refresh_task is not None and not self._voice_refresh_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._voice_refresh_task = loop.create_task(self._refresh_voice_context_in_background())
+
+    async def _refresh_voice_context_in_background(self) -> None:
+        try:
+            await asyncio.to_thread(self.refresh_voice_context)
+        except Exception:  # noqa: BLE001 — a failed warmup must not kill the connector
+            logger.exception("Background voice context refresh failed")
 
     def refresh_voice_context(self, *, state: ConnectorState | None = None) -> ConnectorState:
         state = state or self.state_store.load()
@@ -620,10 +660,14 @@ class HermesMobileConnector:
 
     async def _run_once(self, state: ConnectorState) -> None:
         state = self.refresh_runtime_config(force=False)
-        state = self.refresh_voice_context(state=state)
+        # Warm the voice snapshot in the background: never block the connect loop
+        # (and heartbeats) on the Hermes CLI.
+        self.schedule_voice_context_refresh_if_stale(state=state)
         self.apply_runtime_environment(state)
         settings = self.settings_for_state(state)
-        metadata = self.metadata(display_name=state.connector_display_name, settings=settings)
+        metadata = await asyncio.to_thread(
+            self.metadata, display_name=state.connector_display_name, settings=settings
+        )
         async with websocket_connect(
             state.web_socket_url,
             additional_headers={"Authorization": f"Bearer {state.connector_credential}"},
@@ -1046,17 +1090,17 @@ class HermesMobileConnector:
 
         try:
             if method == "talk.prewarm":
-                result = self._rpc_talk_prewarm()
+                result = await self._handle_talk_prewarm()
             elif method == "talk.session.create":
-                result = self._rpc_talk_session_create(params)
+                result = await self._handle_talk_session_create(params)
             elif method == "talk.session.end":
-                result = self._rpc_talk_session_end(params)
+                result = await asyncio.to_thread(self._rpc_talk_session_end, params)
             elif method == "talk.sdp.exchange":
                 result = await asyncio.to_thread(self._rpc_talk_sdp_exchange, params)
             elif method in {"talk.delegate", "talk.hermes_delegate"}:
                 result = await self._rpc_talk_delegate(params)
             elif method == "commands.catalog":
-                result = self._rpc_commands_catalog()
+                result = await asyncio.to_thread(self._rpc_commands_catalog)
             else:
                 raise RuntimeError(f"Unsupported RPC method: {method}")
             return {
@@ -1073,23 +1117,35 @@ class HermesMobileConnector:
                 "error": str(error),
             }
 
+    async def _handle_talk_prewarm(self) -> dict:
+        # Decide/schedule on the event loop (tasks must be created there); only
+        # the cheap payload build runs off-loop. A stale snapshot is returned
+        # as-is while a refresh is kicked off in the background.
+        self.schedule_voice_context_refresh_if_stale()
+        return await asyncio.to_thread(self._rpc_talk_prewarm)
+
+    async def _handle_talk_session_create(self, params: dict) -> dict:
+        self.schedule_voice_context_refresh_if_stale()
+        return await asyncio.to_thread(self._rpc_talk_session_create, params)
+
     def _rpc_talk_prewarm(self) -> dict:
-        state = self.refresh_voice_context()
+        state = self.state_store.load()
+        snapshot = state.voice_context_snapshot
         return self.talk_readiness_payload() | {
-            "voiceContextUpdatedAt": state.voice_context_snapshot.updated_at if state.voice_context_snapshot else None,
+            "voiceContextUpdatedAt": snapshot.updated_at if snapshot else None,
         }
 
     def _rpc_talk_session_create(self, params: dict) -> dict:
-        state = self.refresh_voice_context_if_stale()
+        # Never wait for the Hermes CLI: use whatever snapshot is cached (even
+        # stale) and fall back to minimal instructions before the first refresh.
+        state = self.state_store.load()
         config = state.realtime_talk or RealtimeTalkConfig(enabled=False)
         secrets = self.state_store.load_secrets()
         relay_mcp_url = params.get("relayMcpURL")
         if not relay_mcp_url:
             raise RuntimeError("Relay MCP URL is required.")
 
-        snapshot = state.voice_context_snapshot
-        if snapshot is None:
-            raise RuntimeError("Voice context is not ready yet.")
+        snapshot = state.voice_context_snapshot or build_minimal_voice_context_snapshot()
 
         requested_provider = str(params.get("provider") or "auto").strip().lower()
         voice_session_id = str(params.get("voiceSessionId") or "").strip()
@@ -1623,7 +1679,10 @@ class HermesMobileConnector:
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=30,
             )
+        except subprocess.TimeoutExpired:
+            return []
         except Exception:
             return []
 
