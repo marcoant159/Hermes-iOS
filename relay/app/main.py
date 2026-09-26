@@ -1262,7 +1262,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.get("/v1/talk/session/{voice_session_id}/delegations/{delegation_id}")
-    def get_talk_delegation(
+    async def get_talk_delegation(
         voice_session_id: str,
         delegation_id: str,
         auth: AuthContext = Depends(get_auth_context),

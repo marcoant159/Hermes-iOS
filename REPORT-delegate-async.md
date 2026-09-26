@@ -28,7 +28,7 @@ Cloudflare corta requisições em 100 s. Solução: POST assíncrono + polling.
 - [x] Testes do relay (`tests/test_hosts.py`): 4 novos cenários.
 - [x] Testes existentes de talk/delegation: 15 passed.
 - [x] App: polling assíncrono (`handleCodexLiveDelegation`, só `codex_live`).
-- [ ] Rodar testes finais (relay) e commits finais.
+- [x] Rodar testes finais (relay) e commits finais.
 
 ## Implementação (app — `LiveVoiceSessionService.swift`)
 - `handleCodexLiveDelegation` (somente `codex_live`) agora:
@@ -60,7 +60,22 @@ Cloudflare corta requisições em 100 s. Solução: POST assíncrono + polling.
 
 ## Resultados de teste (relay)
 - `tests/test_hosts.py -k "talk or delegat"`: 15 passed.
+- `tests/test_hosts.py -k "test_talk_async_delegation"`: 4 passed.
 - `test_api`, `test_config`, `test_conversations`, `test_hermes_adapter`,
-  `test_model_overrides`, `test_storage`, `test_pairing`: 42/42 passed.
+  `test_model_overrides`, `test_storage`, `test_pairing`: 42 passed.
+- `test_streaming`: 9 passed.
 - Ambiente local extremamente lento em SQLite (~20 s/teste de connector);
   executado em lotes com timeouts generosos.
+
+## Notas de revisão
+- `GET` de delegation é `async def` para serializar o acesso ao dict em
+  memória no event loop (evita `RuntimeError` de mutação concorrente).
+- TTL (30 min) > timeout assíncrono (10 min), então uma delegação nunca é
+  podada antes de concluir.
+- Testes do relay usam `TestClient` + thread, sem rede externa (connector
+  websocket mockado), como o restante de `test_hosts.py`.
+
+## Estado final
+Relay e app implementados, commits pequenos em inglês com `Co-Authored-By`.
+Sem push. Não foi possível compilar Swift neste ambiente (sem xcodebuild),
+alterações revisadas manualmente.
