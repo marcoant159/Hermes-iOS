@@ -138,7 +138,8 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     private var geminiResumeTask: Task<Void, Never>?
     private var geminiBootstrap: TalkBootstrap?
     private var geminiSessionResumptionHandle: String?
-    private var geminiRelayMcpURL: String?
+    private var hermesRelayMcpURL: String?
+    private var activeProvider: String?
     private var geminiInputTranscript = ""
     private var geminiAssistantTranscript = ""
     private var geminiIgnoreCurrentAudio = false
@@ -245,6 +246,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
                 )
             }
             voiceSessionID = response.voiceSession.id
+            activeProvider = response.bootstrap.provider
             startedAt = .now
             latencyMetrics.relayBootstrapReceivedAt = .now
             startTimer()
@@ -252,6 +254,9 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
                 try await connectGeminiLive(response.bootstrap)
             } else {
                 #if canImport(WebRTC)
+                if response.bootstrap.provider == "codex_live" {
+                    hermesRelayMcpURL = response.bootstrap.relayMcpURL
+                }
                 let prepared = try await prepareWebRTC()
                 try await connectWithPrepared(prepared, bootstrap: response.bootstrap)
                 #else
@@ -267,6 +272,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             stopGeminiTransport()
             try? await endRemoteSession()
             voiceSessionID = nil
+            activeProvider = nil
             startedAt = nil
             blockedReason = error.localizedDescription
             canStartSession = false
@@ -292,6 +298,9 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         ignoreCurrentAssistantFinalization = false
         lastImageItemID = nil
         #if canImport(WebRTC)
+        if activeProvider == "codex_live" {
+            _ = sendRealtimeEvent(["type": "session.close"])
+        }
         dataChannel?.close()
         dataChannel = nil
         peerConnection?.close()
@@ -302,6 +311,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         try? await endRemoteSession()
         voiceSessionID = nil
+        activeProvider = nil
         voiceState = .idle
         connectionState = .idle
         blockedReason = nil
@@ -319,6 +329,11 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     @discardableResult
     func sendImage(_ imageData: Data, mimeType: String = "image/jpeg", triggerResponse: Bool = true) -> Bool {
         guard connectionState == .connected else { return false }
+
+        if activeProvider == "codex_live" {
+            Self.logger.warning("sendImage is unsupported in codex_live mode.")
+            return false
+        }
 
         if geminiSocket != nil {
             let payload: [String: Any] = [
@@ -635,6 +650,10 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
 
     func handleDataChannelEvent(_ payload: [String: Any]) {
         let type = payload["type"] as? String ?? ""
+        if activeProvider == "codex_live" {
+            handleCodexLiveEvent(type: type, payload: payload)
+            return
+        }
         switch type {
         case "input_audio_buffer.speech_started":
             handleServerVADInterruption()
@@ -761,6 +780,103 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         }
     }
 
+    // MARK: - Codex Live (frameless realtime v3)
+
+    private func handleCodexLiveEvent(type: String, payload: [String: Any]) {
+        switch type {
+        case "session.started", "session.updated":
+            voiceState = .listening
+            statusMessage = "Listening"
+        case "input_transcript.added":
+            handleCodexLiveInputTranscript(payload)
+        case "output_transcript.added":
+            assistantTextSource = "audio"
+            appendAssistantDelta((payload["item"] as? [String: Any])?["text"] as? String ?? "")
+            voiceState = .speaking
+            statusMessage = "Hermes is speaking."
+        case "turn.done":
+            handleCodexLiveTurnDone(payload)
+        case "turn.created", "turn.delta":
+            break
+        case "delegation.created":
+            handleCodexLiveDelegation(payload)
+        case "delegation.context.appended",
+             "session.context.appended",
+             "session.usage.updated":
+            break
+        case "error":
+            handleCodexLiveError(payload)
+        default:
+            break
+        }
+    }
+
+    private func handleCodexLiveInputTranscript(_ payload: [String: Any]) {
+        guard let item = payload["item"] as? [String: Any],
+              let itemID = item["id"] as? String else { return }
+        let delta = item["text"] as? String ?? ""
+        if transcriptItemIDsByConversationItemID[itemID] == nil {
+            currentUserConversationItemID = itemID
+            let placeholder = TranscriptItem(speaker: .user, text: "\u{2026}", isPartial: true)
+            transcriptItemIDsByConversationItemID[itemID] = placeholder.id
+            transcriptItems.append(placeholder)
+        }
+        updateUserTranscriptDelta(for: itemID, delta: delta)
+        voiceState = .listening
+    }
+
+    private func handleCodexLiveTurnDone(_ payload: [String: Any]) {
+        guard let turn = payload["turn"] as? [String: Any],
+              let role = turn["role"] as? String else { return }
+        let transcript = turn["transcript"] as? String ?? ""
+        switch role {
+        case "user":
+            finalizeUserText(itemID: currentUserConversationItemID, finalText: transcript)
+        case "assistant":
+            finalizeAssistantText(transcript)
+        default:
+            break
+        }
+    }
+
+    private func handleCodexLiveDelegation(_ payload: [String: Any]) {
+        guard let item = payload["item"] as? [String: Any],
+              let itemID = item["id"] as? String else { return }
+        let content = item["content"] as? [[String: Any]] ?? []
+        let prompt = content.compactMap { $0["text"] as? String }.joined(separator: "\n")
+        voiceState = .thinking
+        statusMessage = "Hermes is working on that\u{2026}"
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let responseText: String
+            do {
+                responseText = try await self.callHermesDelegate(prompt)
+            } catch {
+                responseText = "Não foi possível concluir a solicitação no Hermes."
+            }
+            guard !self.isEndingSession else { return }
+            _ = self.sendRealtimeEvent([
+                "type": "delegation.context.append",
+                "delegation_item_id": itemID,
+                "channel": "speakable",
+                "content": [
+                    ["type": "input_text", "text": responseText] as [String: Any]
+                ],
+            ])
+        }
+    }
+
+    private func handleCodexLiveError(_ payload: [String: Any]) {
+        if isEndingSession { return }
+        let message = ((payload["error"] as? [String: Any])?["message"] as? String)
+            ?? (payload["message"] as? String)
+            ?? "GPT Live talk failed."
+        blockedReason = message
+        connectionState = .failed
+        voiceState = .disconnected
+        statusMessage = message
+    }
+
     #if canImport(WebRTC)
     private struct PreparedWebRTC {
         let connection: RTCPeerConnection
@@ -799,7 +915,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         audioTrack?.isEnabled = !isMuted
 
         let answerSDP: String
-        if bootstrap.provider == "codex_realtime" {
+        if bootstrap.provider == "codex_realtime" || bootstrap.provider == "codex_live" {
             answerSDP = try await exchangeRelaySDP(localSDP: prepared.offerSDP)
         } else {
             guard let clientSecret = bootstrap.clientSecret else {
@@ -885,7 +1001,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
             throw RelayAPIClient.ClientError.invalidURL(endpoint.absoluteString)
         }
 
-        geminiRelayMcpURL = mcpURL
+        hermesRelayMcpURL = mcpURL
         geminiSocket = urlSession.webSocketTask(with: socketURL)
         guard let socket = geminiSocket else {
             throw RelayAPIClient.ClientError.requestFailed("Could not create Gemini Live WebSocket.")
@@ -1280,7 +1396,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     }
 
     private func callHermesDelegate(_ prompt: String) async throws -> String {
-        guard let relayURL = geminiRelayMcpURL, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        guard let relayURL = hermesRelayMcpURL, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let url = URL(string: relayURL)
         else {
             throw RelayAPIClient.ClientError.requestFailed("Hermes tool delegation is unavailable.")
@@ -1318,7 +1434,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         geminiSocket = nil
         geminiBootstrap = nil
         geminiSessionResumptionHandle = nil
-        geminiRelayMcpURL = nil
+        hermesRelayMcpURL = nil
         geminiInputTranscript = ""
         geminiAssistantTranscript = ""
         geminiIgnoreCurrentAudio = false
@@ -1518,6 +1634,11 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
     /// must send the full sequence: cancel → clear → truncate.
     func manuallyInterruptAssistantOutput() {
         guard voiceState == .speaking || assistantAudioPlaybackStartedAtUptime != nil else { return }
+        if activeProvider == "codex_live" {
+            voiceState = .listening
+            statusMessage = "Listening"
+            return
+        }
         if geminiSocket != nil {
             geminiAudioPlayer.stop()
             geminiAudioPlayer.play()
