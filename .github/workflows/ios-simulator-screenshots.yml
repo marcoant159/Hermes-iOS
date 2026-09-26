@@ -47,6 +47,8 @@ jobs:
           xcrun simctl list devices | grep "$UDID"
           xcrun simctl boot "$UDID"
           xcrun simctl bootstatus "$UDID" -b
+          # sem a dica de "deslize para digitar", que cobre a tela no 1º teclado
+          xcrun simctl spawn "$UDID" defaults write com.apple.keyboard.preferences DidShowContinuousPathIntroduction -bool true
           xcrun simctl ui "$UDID" appearance "${{ inputs.appearance || 'light' }}"
           xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"

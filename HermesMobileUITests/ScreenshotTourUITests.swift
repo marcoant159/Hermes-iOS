@@ -37,7 +37,13 @@ final class ScreenshotTourUITests: XCTestCase {
                 setupCodeField.typeText("ABCD-EFGH")
             }
             snap(app, "02-pairing-code")
-            tapIfExists(app.buttons["Connect Hermes"])
+            // Hide the keyboard, which covers "Connect Hermes".
+            app.staticTexts["Hermes iOS"].firstMatch.tap()
+            let connect = app.buttons["Connect Hermes"]
+            for _ in 0..<3 where connect.exists && !connect.isHittable {
+                app.swipeUp()
+            }
+            tapIfExists(connect)
 
             let continueButton = app.buttons["Continue"]
             if continueButton.waitForExistence(timeout: 5) {
