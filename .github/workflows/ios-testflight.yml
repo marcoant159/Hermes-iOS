@@ -1,0 +1,132 @@
+name: TestFlight
+
+# Assina e envia o app ao TestFlight a partir do runner macOS gratuito
+# (repositório público), sem depender da VM macOS do notebook.
+# Disparo manual: Actions → TestFlight → Run workflow.
+#
+# Secrets: ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8_BASE64 (chave de API do App Store
+# Connect), DIST_CERT_P12_BASE64/DIST_CERT_PASSWORD e DEV_CERT_P12_BASE64/
+# DEV_CERT_PASSWORD (certificados com chave privada) e CI_KEYCHAIN_PASSWORD.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "CFBundleVersion (vazio = 4 + número da execução)"
+        required: false
+
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  testflight:
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app
+          xcodebuild -version
+
+      - name: Número do build
+        id: bn
+        run: |
+          BN="${{ inputs.build_number }}"
+          [ -n "$BN" ] || BN=$((4 + ${{ github.run_number }}))
+          echo "value=$BN" >> "$GITHUB_OUTPUT"
+          echo "CFBundleVersion = $BN"
+
+      - name: Keychain, certificados e chave de API
+        env:
+          KEYCHAIN_PASSWORD: ${{ secrets.CI_KEYCHAIN_PASSWORD }}
+          DIST_P12: ${{ secrets.DIST_CERT_P12_BASE64 }}
+          DIST_PASS: ${{ secrets.DIST_CERT_PASSWORD }}
+          DEV_P12: ${{ secrets.DEV_CERT_P12_BASE64 }}
+          DEV_PASS: ${{ secrets.DEV_CERT_PASSWORD }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/build.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KC"
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          curl -sSfo "$RUNNER_TEMP/AppleWWDRCAG3.cer" https://www.apple.com/certificateauthority/AppleWWDRCAG3.cer
+          security import "$RUNNER_TEMP/AppleWWDRCAG3.cer" -k "$KC"
+          echo "$DIST_P12" | base64 --decode > "$RUNNER_TEMP/dist.p12"
+          echo "$DEV_P12" | base64 --decode > "$RUNNER_TEMP/dev.p12"
+          security import "$RUNNER_TEMP/dist.p12" -k "$KC" -P "$DIST_PASS" -T /usr/bin/codesign -T /usr/bin/security
+          security import "$RUNNER_TEMP/dev.p12" -k "$KC" -P "$DEV_PASS" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KC" >/dev/null
+          rm -f "$RUNNER_TEMP/dist.p12" "$RUNNER_TEMP/dev.p12"
+          security find-identity -v -p codesigning "$KC"
+          mkdir -p "$RUNNER_TEMP/asc"
+          echo "$ASC_KEY_P8" | base64 --decode > "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
+
+      - name: Archive (assinado)
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project HermesMobile.xcodeproj \
+            -scheme HermesMobile \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Hermes.xcarchive" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            CURRENT_PROJECT_VERSION=${{ steps.bn.outputs.value }} \
+            > "$RUNNER_TEMP/archive.log" 2>&1 || {
+              grep -nE "error:" "$RUNNER_TEMP/archive.log" | head -40 || true
+              tail -n 80 "$RUNNER_TEMP/archive.log"
+              exit 1
+            }
+          tail -n 5 "$RUNNER_TEMP/archive.log"
+
+      - name: Exportar e enviar ao TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+          <key>method</key><string>app-store-connect</string>
+          <key>destination</key><string>upload</string>
+          <key>teamID</key><string>MXZ42GRXC6</string>
+          <key>signingStyle</key><string>automatic</string>
+          <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict></plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Hermes.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            > "$RUNNER_TEMP/export.log" 2>&1 || {
+              grep -nE "error|Error" "$RUNNER_TEMP/export.log" | head -40 || true
+              tail -n 60 "$RUNNER_TEMP/export.log"
+              exit 1
+            }
+          grep -E "Upload succeeded|EXPORT SUCCEEDED" "$RUNNER_TEMP/export.log" || tail -n 20 "$RUNNER_TEMP/export.log"
+
+      - name: Limpeza
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/build.keychain-db" 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/asc"
