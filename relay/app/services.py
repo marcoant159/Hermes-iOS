@@ -769,6 +769,23 @@ def serialize_voice_turn(turn: VoiceTurn) -> dict:
     }
 
 
+def list_recent_voice_turns(
+    db: Session,
+    *,
+    voice_session_id: str,
+    limit: int = 8,
+) -> list[VoiceTurn]:
+    """Return the most recent ``limit`` voice turns in chronological order."""
+
+    recent = db.scalars(
+        select(VoiceTurn)
+        .where(VoiceTurn.voice_session_id == voice_session_id)
+        .order_by(VoiceTurn.created_at.desc(), VoiceTurn.id.desc())
+        .limit(limit)
+    ).all()
+    return list(reversed(recent))
+
+
 def inject_voice_transcript(
     db: Session,
     *,

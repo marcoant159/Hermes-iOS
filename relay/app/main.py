@@ -85,6 +85,7 @@ from .services import (
     list_inbox_actions,
     list_inbox_items,
     list_message_jobs_for_conversation,
+    list_recent_voice_turns,
     record_audit,
     record_inbox_action,
     redeem_phone_pairing_code,
@@ -462,12 +463,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if entry is None:
             return
         try:
+            # Hand the connector the recent voice context so each independent
+            # delegation can still answer in context. Old connectors ignore it.
+            with database.session() as db:
+                recent_turns = [
+                    {"role": turn.role, "text": turn.text}
+                    for turn in list_recent_voice_turns(
+                        db,
+                        voice_session_id=voice_session_id,
+                        limit=8,
+                    )
+                    if turn.text and turn.text.strip()
+                ]
             result = await app.state.send_connector_rpc(
                 user_id,
                 method="talk.delegate",
                 params={
                     "voiceSessionId": voice_session_id,
                     "prompt": prompt,
+                    "recentTurns": recent_turns,
                 },
                 timeout_seconds=settings.talk_delegate_async_timeout_seconds,
             )
