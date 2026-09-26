@@ -229,6 +229,7 @@ def summarize_sensor_freshness(sensor_store: SensorStore) -> str:
 
 _memory_provider_cache: tuple[float, str] = (0.0, "")
 _MEMORY_PROVIDER_CACHE_TTL = 300.0  # 5 minutes — rarely changes
+_HERMES_CLI_TIMEOUT_SECONDS = 30.0
 
 
 def summarize_memory_provider(*, hermes_command: str | None, hermes_home: str | None) -> str:
@@ -238,7 +239,6 @@ def summarize_memory_provider(*, hermes_command: str | None, hermes_home: str | 
         return "Memory provider status unavailable."
 
     # Return cached result if fresh — avoids spawning a subprocess on every call
-    import time
     now = time.monotonic()
     cached_at, cached_result = _memory_provider_cache
     if cached_result and (now - cached_at) < _MEMORY_PROVIDER_CACHE_TTL:
@@ -253,11 +253,18 @@ def summarize_memory_provider(*, hermes_command: str | None, hermes_home: str | 
             [hermes_command, "memory", "status"],
             capture_output=True,
             text=True,
-            timeout=5,  # reduced from 10s — if it takes longer, use stale cache
+            timeout=_HERMES_CLI_TIMEOUT_SECONDS,
             check=False,
             env=env,
         )
+    except subprocess.TimeoutExpired:
+        # Keep the previous cache rather than degrading the prompt to an error.
+        if cached_result:
+            return cached_result
+        return "Memory provider status unavailable: timed out."
     except Exception as error:  # noqa: BLE001
+        if cached_result:
+            return cached_result
         return f"Memory provider status unavailable: {error}"
 
     output = completed.stdout or completed.stderr or ""
@@ -309,6 +316,37 @@ def build_voice_context_snapshot(
         system_prompt=system_prompt,
         memory_summary=memory_summary,
         user_summary=user_summary,
+        sensor_summary=sensor_summary,
+        memory_provider_summary=memory_provider_summary,
+        readiness_summary=readiness_summary,
+        updated_at=utcnow_iso(),
+    )
+
+
+def build_minimal_voice_context_snapshot(
+    *,
+    readiness_summary: str = "Hermes readiness is being checked in the background.",
+) -> VoiceContextSnapshot:
+    """A cheap placeholder snapshot used before the first real refresh finishes.
+
+    Deliberately avoids disk/CLI access so callers (``talk.session.create``) can
+    start a voice session immediately while a full snapshot is built in the
+    background.
+    """
+    sensor_summary = "Sensor context is not available yet."
+    memory_provider_summary = "Memory provider status is being checked in the background."
+    system_prompt = render_voice_system_prompt(
+        soul_summary="(not available)",
+        memory_summary="(not available)",
+        user_summary="(not available)",
+        sensor_summary=sensor_summary,
+        memory_provider_summary=memory_provider_summary,
+        readiness_summary=readiness_summary,
+    )
+    return VoiceContextSnapshot(
+        system_prompt=system_prompt,
+        memory_summary="(not available)",
+        user_summary="(not available)",
         sensor_summary=sensor_summary,
         memory_provider_summary=memory_provider_summary,
         readiness_summary=readiness_summary,

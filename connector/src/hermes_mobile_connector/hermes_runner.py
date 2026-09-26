@@ -87,13 +87,17 @@ class HermesCLIExecutor:
         if command_path is None:
             return None
 
-        completed = subprocess.run(
-            [command_path, "--version"],
-            cwd=self.settings.hermes_workdir or None,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                [command_path, "--version"],
+                cwd=self.settings.hermes_workdir or None,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            return None
         if completed.returncode != 0:
             return None
 
