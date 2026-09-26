@@ -320,7 +320,7 @@ struct SettingsScreen: View {
 
     private var wakeWordDescription: String {
         guard settingsStore.settings.wakeWordEnabled else {
-            return "Say \u{201C}oi hermes\u{201D} (or \u{201C}hey hermes\u{201D}), speak your command, and Hermes answers out loud. Keeps the microphone active in the background while the app is running."
+            return "Say \u{201C}oi hermes\u{201D} to open the GPT Live voice session hands-free, or \u{201C}oi hermes, <question>\u{201D} to send the question straight to Hermes. Keeps the microphone active in the background while the app is running."
         }
         let wakeWordService = AppContainer.sharedDefault().wakeWordService
         if wakeWordService.isSuspendedForExternalCapture {
