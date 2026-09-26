@@ -1,3 +1,4 @@
+import CoreGraphics
 import XCTest
 
 /// Walks the main screens in mock pairing mode and attaches a screenshot of each.
@@ -79,7 +80,55 @@ final class ScreenshotTourUITests: XCTestCase {
             if tapIfExists(app.buttons["settings.hermesHost"]) {
                 sleep(2)
                 snap(app, "09-host")
+
+                // Return to the chat before the conversation / model / voice stops.
+                let back = app.navigationBars.buttons["Back"].exists
+                    ? app.navigationBars.buttons["Back"]
+                    : app.navigationBars.buttons.firstMatch
+                if tapIfExists(back) {
+                    sleep(2)
+                }
             }
+        }
+
+        // Conversation list (toolbar list button on the chat).
+        if tapIfExists(app.buttons["Conversations"]) {
+            sleep(2)
+            snap(app, "10-conversations")
+            tapIfExists(app.buttons["Done"])
+            sleep(1)
+        }
+
+        // New conversation action (compose button on the chat).
+        if tapIfExists(app.buttons["New conversation"]) {
+            sleep(2)
+            snap(app, "11-new-conversation")
+        }
+
+        // Model / status chip (top-left) opens the "Model for new messages" picker.
+        // The chip has no accessibility label, so match its model-name text.
+        let modelChip = app.buttons
+            .matching(NSPredicate(format: "label CONTAINS[c] %@", "gpt-5.4-mini"))
+            .firstMatch
+        if tapIfExists(modelChip) {
+            sleep(2)
+            snap(app, "12-model-picker")
+            // Dismiss the popover without matching one of its model-name buttons.
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.06)).tap()
+            sleep(1)
+        }
+
+        // Voice mode overlay (auto-starts a mock session).
+        if tapIfExists(app.buttons["Start voice mode"]) {
+            sleep(4)
+            // Nudge the interruption monitor in case the mic permission alert is up.
+            app.tap()
+            sleep(2)
+            snap(app, "13-voice-mode")
+            if !tapIfExists(app.buttons["End voice session"], timeout: 3) {
+                tapIfExists(app.buttons["Close"], timeout: 3)
+            }
+            sleep(1)
         }
     }
 
