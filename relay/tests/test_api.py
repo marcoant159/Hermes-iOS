@@ -134,6 +134,37 @@ def test_device_app_state_roundtrip(tmp_path):
         assert response.json()["data"]["state"] == "foreground"
 
 
+def test_device_app_state_logs_wake_word_event(tmp_path):
+    from sqlalchemy import select
+
+    from app.models import AuditLog
+
+    with build_client(tmp_path) as client:
+        register_data = register_device(client)
+        access_token = register_data["auth"]["accessToken"]
+
+        response = client.post(
+            "/v1/device/app-state",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"state": "background", "wakeWordEvent": "wake phrase detected"},
+        )
+        assert response.status_code == 200
+        assert response.json()["data"]["state"] == "background"
+
+        with client.app.state.database.session() as db:
+            entry = db.execute(
+                select(AuditLog).where(AuditLog.action == "device.app_state")
+            ).scalar_one()
+        assert entry.payload["wakeWordEvent"] == "wake phrase detected"
+
+        too_long = client.post(
+            "/v1/device/app-state",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"state": "background", "wakeWordEvent": "x" * 201},
+        )
+        assert too_long.status_code == 422
+
+
 def test_chat_reply_triggers_push_when_device_is_backgrounded(tmp_path):
     class StubAPNsClient:
         def __init__(self) -> None:
