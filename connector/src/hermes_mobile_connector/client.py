@@ -456,9 +456,10 @@ class HermesMobileConnector:
             config.preferred_models = list(DEFAULT_REALTIME_MODELS)
         if not config.voice:
             config.voice = DEFAULT_REALTIME_VOICE
-        state.realtime_talk = config
-        state = self.refresh_voice_context(state=state)
-        self.state_store.save(state)
+        self.refresh_voice_context(state=state)
+        state = self.state_store.update(
+            lambda current: setattr(current, "realtime_talk", config)
+        )
 
         if validate:
             return self.validate_realtime_configuration()
@@ -473,11 +474,12 @@ class HermesMobileConnector:
             config.last_validated_at = utcnow_iso()
             config.last_validation_error = "OpenAI API key is not configured."
             config.last_selected_model = None
-            state.realtime_talk = config
-            return self.state_store.save(state)
+            return self.state_store.update(
+                lambda current: setattr(current, "realtime_talk", config)
+            )
 
         config = state.realtime_talk or RealtimeTalkConfig()
-        state = self.refresh_voice_context(state=state)
+        self.refresh_voice_context(state=state)
         try:
             _, selected_model = self._create_openai_realtime_session(
                 api_key=secrets.openai_api_key,
@@ -489,16 +491,14 @@ class HermesMobileConnector:
             config.last_validated_at = utcnow_iso()
             config.last_validation_error = None
             config.last_selected_model = selected_model
-            state.realtime_talk = config
-            self.state_store.save(state)
-            return state
         except Exception as error:  # noqa: BLE001
             config.enabled = True
             config.last_validated_at = utcnow_iso()
             config.last_validation_error = str(error)
             config.last_selected_model = None
-            state.realtime_talk = config
-            return self.state_store.save(state)
+        return self.state_store.update(
+            lambda current: setattr(current, "realtime_talk", config)
+        )
 
     _VOICE_CONTEXT_FRESH_SECONDS = 60.0  # prewarm rebuilds context; session create reuses if fresh
 
@@ -552,19 +552,25 @@ class HermesMobileConnector:
             logger.exception("Background voice context refresh failed")
 
     def refresh_voice_context(self, *, state: ConnectorState | None = None) -> ConnectorState:
+        # ``state`` (when provided) is only read for configuration: the rebuild
+        # runs Hermes CLI subprocesses for ~30s, so persisting that old object
+        # would clobber anything another path wrote meanwhile. Write the snapshot
+        # against the latest persisted state instead, and only that field.
         state = state or self.state_store.load()
         self.apply_runtime_environment(state)
         settings = self.settings_for_state(state)
         readiness_summary = native_mcp_readiness_message(hermes_command=settings.hermes_command)
         if state.mcp_last_test_error:
             readiness_summary = f"{readiness_summary} ({state.mcp_last_test_error})"
-        state.voice_context_snapshot = build_voice_context_snapshot(
+        snapshot = build_voice_context_snapshot(
             sensor_store=self.sensor_store,
             hermes_command=settings.hermes_command,
             hermes_home=state.runtime_config.hermes_home if state.runtime_config else os.getenv("HERMES_HOME"),
             readiness_summary=readiness_summary,
         )
-        return self.state_store.save(state)
+        return self.state_store.update(
+            lambda current: setattr(current, "voice_context_snapshot", snapshot)
+        )
 
     def talk_readiness_payload(self) -> dict:
         state = self.state_store.load()
@@ -632,8 +638,10 @@ class HermesMobileConnector:
         if state.runtime_config is not None and not force:
             return state
 
-        state.runtime_config = self.capture_runtime_config(relay_url=state.relay_url)
-        return self.state_store.save(state)
+        runtime_config = self.capture_runtime_config(relay_url=state.relay_url)
+        return self.state_store.update(
+            lambda current: setattr(current, "runtime_config", runtime_config)
+        )
 
     def create_phone_pairing_code(self) -> PhonePairingDetails:
         state = self.state_store.load()
@@ -658,8 +666,10 @@ class HermesMobileConnector:
             except KeyboardInterrupt:
                 raise
             except Exception as error:  # noqa: BLE001
-                state.last_error = str(error)
-                self.state_store.save(state)
+                message = str(error)
+                self.state_store.update(
+                    lambda current: setattr(current, "last_error", message)
+                )
                 await asyncio.sleep(self.reconnect_delay_seconds)
 
     async def _run_once(self, state: ConnectorState) -> None:
@@ -699,9 +709,13 @@ class HermesMobileConnector:
             if ready.get("type") != "ready":
                 raise RuntimeError("Relay did not accept the connector session.")
 
-            state.last_connected_at = utcnow_iso()
-            state.last_error = None
-            self.state_store.save(state)
+            connected_at = utcnow_iso()
+
+            def _mark_connected(current: ConnectorState) -> None:
+                current.last_connected_at = connected_at
+                current.last_error = None
+
+            self.state_store.update(_mark_connected)
 
             while True:
                 try:
@@ -1207,8 +1221,9 @@ class HermesMobileConnector:
         config.last_selected_model = selected_model
         config.last_validated_at = utcnow_iso()
         config.last_validation_error = None
-        state.realtime_talk = config
-        self.state_store.save(state)
+        self.state_store.update(
+            lambda current: setattr(current, "realtime_talk", config)
+        )
 
         # The /v1/realtime/client_secrets response puts the ephemeral key at the
         # top level: {"value": "ek_...", "expires_at": ..., "session": {...}}
@@ -2214,27 +2229,42 @@ class HermesMobileConnector:
         ]
 
     def _configure_native_mcp(self, state: ConnectorState, *, hermes_command: str) -> ConnectorState:
+        tested_at = utcnow_iso()
         try:
             registration = register_native_mcp_server(state_dir=self.state_store.state_dir)
-            state.mcp_server_name = registration.server_name
-            state.mcp_configured = True
-            state.mcp_command_path = registration.command_path
-            state.mcp_registered_at = utcnow_iso()
-            state.mcp_last_test_at = utcnow_iso()
-            state.mcp_last_test_error = validate_native_mcp_server(
-                hermes_command=hermes_command,
-                server_name=registration.server_name,
-            ) or validate_native_mcp_tools(server_name=registration.server_name)
+            fields = {
+                "mcp_server_name": registration.server_name,
+                "mcp_configured": True,
+                "mcp_command_path": registration.command_path,
+                "mcp_registered_at": tested_at,
+                "mcp_last_test_at": tested_at,
+                "mcp_last_test_error": validate_native_mcp_server(
+                    hermes_command=hermes_command,
+                    server_name=registration.server_name,
+                )
+                or validate_native_mcp_tools(server_name=registration.server_name),
+            }
         except Exception as error:  # noqa: BLE001
-            state.mcp_last_test_at = utcnow_iso()
-            state.mcp_last_test_error = str(error)
-        return self.state_store.save(state)
+            fields = {
+                "mcp_last_test_at": tested_at,
+                "mcp_last_test_error": str(error),
+            }
+
+        def _apply(current: ConnectorState) -> None:
+            for name, value in fields.items():
+                setattr(current, name, value)
+
+        return self.state_store.update(_apply)
 
     def _mark_mcp_unconfigured(self, state: ConnectorState) -> ConnectorState:
-        state.mcp_configured = False
-        state.mcp_last_test_at = utcnow_iso()
-        state.mcp_last_test_error = None
-        return self.state_store.save(state)
+        tested_at = utcnow_iso()
+
+        def _apply(current: ConnectorState) -> None:
+            current.mcp_configured = False
+            current.mcp_last_test_at = tested_at
+            current.mcp_last_test_error = None
+
+        return self.state_store.update(_apply)
 
     @staticmethod
     def _mcp_validation_summary(*, state: ConnectorState, mcp_status) -> str:
