@@ -108,6 +108,11 @@ Enquanto a entitlement não estiver no perfil, o arquivo `HermesMobile-CarPlay.e
 
 ## Validação (CI)
 
+- `Build unsigned IPA` — run **36334658432** (wake word x CarPlay), verde (2m33s): os arquivos
+  Swift alterados compilam.
+- `Simulator screenshots` — run **36334830827** (wake word x CarPlay), verde (10m40s):
+  `Test Suite 'ScreenshotTourUITests' passed`, `test.log` sem erros. Confirma que a suspensão
+  da wake word não quebrou o app (sem CarPlay o comportamento é o de sempre).
 - `Build unsigned IPA` — run **36333388647**, verde (1m51s): os arquivos Swift novos compilam.
 - `Simulator screenshots` — run **36333518550**, verde (9m13s): 13 PNGs + `tour.mp4`,
   `Test Suite 'ScreenshotTourUITests' passed`, `test.log` sem erros. Confirma que o
@@ -126,6 +131,9 @@ Enquanto a entitlement não estiver no perfil, o arquivo `HermesMobile-CarPlay.e
   carro de verdade — sem a entitlement o app **não** aparece na tela do carro/Simulator.
 - Textos do CarPlay estão em pt-BR literal; se um dia quiser multilíngue, mover para
   `Localizable.xcstrings`.
+- A suspensão da wake word por CarPlay só pode ser exercitada de verdade no carro (ou no
+  Simulator com a tela de CarPlay): sem a entitlement a cena não roda. O CI cobre a
+  compilação e a não-regressão no iPhone.
 
 ## Roteiro de teste no iPhone (Marco)
 
@@ -151,7 +159,14 @@ Enquanto a entitlement não estiver no perfil, o arquivo `HermesMobile-CarPlay.e
 8. **Desconectar** o carro com a sessão aberta: a sessão encerra com segurança; ao reconectar,
    abrir de novo e repetir.
 9. Iniciar uma sessão de voz **no iPhone** e só então conectar o carro: ao desconectar, a
-   sessão do iPhone deve continuar (o CarPlay só encerra o que ele mesmo abriu).
+    sessão do iPhone deve continuar (o CarPlay só encerra o que ele mesmo abriu).
+10. **Wake word x CarPlay:** com a wake word ligada, abrir o Hermes no carro. Em Ajustes →
+    Mãos livres, a linha de status deve dizer **“Pausada enquanto conectado ao CarPlay”**, e
+    dizer “oi hermes” **não** deve abrir sessão nenhuma (nem no carro, nem no iPhone).
+    Desconectar o carro: o status volta ao normal e “oi hermes” funciona de novo.
+11. Com o carro conectado, disparar a Siri/Atalho “Conversar com o Hermes” ou o Toque
+    Traseiro: o overlay de voz deve abrir **no iPhone** e a tela do carro **não** deve
+    começar a conversar sozinha.
 
 ## Wake word x CarPlay
 
