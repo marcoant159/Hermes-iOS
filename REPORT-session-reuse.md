@@ -142,10 +142,11 @@ Exemplo numérico (N=5, e≈700, B≈20k):
 - Suite completa do connector: falham só 5 de `test_sensor_store.py`, **pré-existentes e
   dependentes de data** (amostras de 2026-04 podadas pela janela, "hoje" = 2026-09-27);
   nenhuma relação com esta mudança.
-- CI (branch `wip/session-reuse`, commit `8bc72d1`, mesmo código do tip):
-  - `Build unsigned IPA` run **36291469985** — success (2m49s).
-  - `Simulator screenshots` run **36291618689** — success (8m31s); 13 screenshots + `test.log`
-    (1 teste, 0 falhas) + `tour.mp4`, baixados em `.tmp/run-36291618689`.
+- CI (branch `wip/session-reuse`):
+  - `Build unsigned IPA` run **36292127574** (tip `4772368`) — success (2m27s).
+  - `Simulator screenshots` run **36292252855** (tip `4772368`) — success (8m+); 13 screenshots
+    + `test.log` (1 teste, 0 falhas) + `tour.mp4`. Runs anteriores (código `8bc72d1`):
+    build 36291469985 e screenshots 36291618689, também verdes.
 
 ## Pendências
 
