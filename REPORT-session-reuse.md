@@ -10,8 +10,8 @@ não há sessão. Diagnóstico com evidência real (código dos dois lados + Pos
 - [x] Contexto lido (`.tmp/REPORT-speed-anterior.md`, connector, relay, `.tmp/hermes-src`).
 - [x] Evidência real: Postgres (conversations/message_jobs/audit_log) + logs relay/connector.
 - [x] Causa-raiz determinada (abaixo).
-- [ ] Implementação + testes.
-- [ ] CI verde (build IPA + screenshots).
+- [x] Implementação + testes.
+- [x] CI verde (build IPA + screenshots).
 
 ## Causa-raiz (com evidência)
 
@@ -133,3 +133,25 @@ Exemplo numérico (N=5, e≈700, B≈20k):
    `SELECT id, hermes_session_id FROM conversations ORDER BY updated_at DESC LIMIT 3;`
 5. Toque em **New conversation** e confirme que a nova conversa começa com
    `hermes_session_id` nulo (sessão nova), como esperado.
+
+## Validação
+
+- Connector (`timeout 300 .tmp/venv-connector/bin/python -m pytest connector/tests/test_streaming.py -q`): 23 passed.
+- Connector (`... test_connector.py test_model_overrides.py -q`): 52 passed.
+- Relay (`... .tmp/venv-relay/bin/python -m pytest relay/tests/test_hosts.py relay/tests/test_api.py -q`): 38 passed.
+- Suite completa do connector: falham só 5 de `test_sensor_store.py`, **pré-existentes e
+  dependentes de data** (amostras de 2026-04 podadas pela janela, "hoje" = 2026-09-27);
+  nenhuma relação com esta mudança.
+- CI (branch `wip/session-reuse`, commit `8bc72d1`, mesmo código do tip):
+  - `Build unsigned IPA` run **36291469985** — success (2m49s).
+  - `Simulator screenshots` run **36291618689** — success (8m31s); 13 screenshots + `test.log`
+    (1 teste, 0 falhas) + `tour.mp4`, baixados em `.tmp/run-36291618689`.
+
+## Pendências
+
+- Deploy do connector por Marco (ver roteiro); sem ele o ganho não chega ao iPhone.
+- `voiceTranscriptContext` continua crescendo sem limite (fora do escopo desta tarefa); é um
+  dos fatores de prompt alto observados. Candidato a limitar/sumarizar depois.
+- Se o servidor perder a sessão (id desconhecido/rotacionado além do `_resolve_live_session_id`),
+  o turno roda só com a mensagem nova. Aceitável pelo contrato do servidor; um "histórico curto"
+  de fallback é o próximo incremento, se necessário.
