@@ -412,7 +412,7 @@ struct ChatScreen: View {
                                 .foregroundStyle(Design.Colors.secondaryForeground)
                         }
 
-                        Text("\(max(maxCtx - usedTokens, 0).formatted()) prompt tokens remaining")
+                        Text(String(localized: "\(max(maxCtx - usedTokens, 0).formatted()) prompt tokens remaining"))
                             .font(Design.Typography.caption)
                             .foregroundStyle(Design.Colors.secondaryForeground)
                     } else {

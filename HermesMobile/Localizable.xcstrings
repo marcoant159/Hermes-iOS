@@ -2203,6 +2203,38 @@
         }
       }
     },
+    "%@ prompt tokens remaining" : {
+      "localizations" : {
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ tokens de prompt restantes"
+          }
+        }
+      }
+    },
+    "%lld new" : {
+      "localizations" : {
+        "pt-BR" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld novo"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld novos"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "Voice conversations with Hermes in Talk Mode." : {
       "localizations" : {
         "pt-BR" : {
