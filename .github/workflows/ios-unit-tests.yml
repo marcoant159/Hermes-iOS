@@ -1,0 +1,55 @@
+name: Unit tests
+
+# Roda os testes unitários (target HermesMobileTests) no iOS Simulator do runner
+# macOS. Disparo: gh workflow run "Unit tests" -R marcoant159/Hermes-iOS --ref <branch>
+# [-f only=HermesMobileTests/WakePhraseTests]
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Filtro -only-testing (vazio = target HermesMobileTests inteiro)"
+        required: false
+
+jobs:
+  unit-tests:
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Toolchain
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app
+          xcodebuild -version
+
+      - name: Testes
+        run: |
+          set -o pipefail
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devs = [d for rt, ds in json.load(sys.stdin)["devices"].items() if "iOS" in rt for d in ds if d["name"].startswith("iPhone")]
+          print(devs[-1]["udid"])')
+          ONLY="${{ inputs.only }}"
+          xcodebuild test \
+            -project HermesMobile.xcodeproj \
+            -scheme HermesMobile \
+            -configuration Debug \
+            -destination "id=$UDID" \
+            -only-testing:"${ONLY:-HermesMobileTests}" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -resultBundlePath "$RUNNER_TEMP/unit.xcresult" \
+            CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= CODE_SIGN_IDENTITY=- PROVISIONING_PROFILE_SPECIFIER= \
+            > "$RUNNER_TEMP/test.log" 2>&1
+          STATUS=$?
+          grep -E "Test (Case|Suite).*(passed|failed)|✔|✘|error:|Executed|tests? (passed|failed)" "$RUNNER_TEMP/test.log" | tail -80 || true
+          exit $STATUS
+
+      - name: Publicar log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-tests-${{ github.run_number }}
+          path: ${{ runner.temp }}/test.log
+          retention-days: 14
