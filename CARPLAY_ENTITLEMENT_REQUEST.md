@@ -28,7 +28,7 @@ fields. Typical in-car requests, all spoken and answered by voice:
 
 - "How full are the water reservoirs at the farm right now?"
 - "What is on my schedule this afternoon?"
-- "Send a message to [contact] that I am on my way."
+- "Were there any new expenses or pending invoices for the farm today?"
 - "Summarize the latest notes from the farm log."
 - "What is the weather going to be for the next few days?"
 - Follow-up questions in the same conversation (context is kept across turns).
@@ -48,6 +48,11 @@ which matches Apple's guidelines for this category.
   spoken question answering and voice-driven actions.
 - The app already uses `CPVoiceControlTemplate` as its only CarPlay UI and keeps
   the audio session open only while a voice turn is active.
+- In CarPlay the app is launched only by the user from the CarPlay Home screen.
+  It does not act as a system-wide assistant and is not activated by a wake word
+  or a steering-wheel button while connected to CarPlay.
+- Responses are spoken only; the CarPlay screen never shows text or images for a
+  query result.
 
 ## Entitlement requested
 
