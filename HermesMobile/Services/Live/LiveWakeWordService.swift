@@ -492,7 +492,7 @@ final class LiveWakeWordService {
     ///
     /// Matching (normalization, transcription variants and the small edit-distance
     /// tolerance) lives in ``WakePhrase`` so it can be unit-tested in isolation.
-    nonisolated func commandAfterTrigger(in text: String) -> String? {
+    func commandAfterTrigger(in text: String) -> String? {
         wakePhrase.match(in: text)?.remainder
     }
 
