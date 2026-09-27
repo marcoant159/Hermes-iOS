@@ -42,6 +42,7 @@ class HermesAPIExecutor:
     provider: str | None = None
     model: str | None = None
     model_options: dict | None = None
+    history_limit: int | None = None
 
     def _base_url(self) -> str:
         return self.api_server_url.rstrip("/")
@@ -66,12 +67,25 @@ class HermesAPIExecutor:
         latest_user_message: str,
         history: list[HermesConversationMessage] | None,
         attachments: list[dict] | None = None,
+        session_id: str | None = None,
     ) -> list[dict]:
-        messages: list[dict] = [
-            {"role": self._api_role(message.role), "content": message.text}
-            for message in history or []
-            if message.text.strip()
-        ]
+        # When a Hermes session id is sent, the API server loads the whole
+        # session history from its own state.db and ignores the body history
+        # (api_server_openai_routes.py:657-688). Replaying it would just waste
+        # the upload, so send only the new turn and let the session carry the
+        # context. Without a session, replay a bounded tail of the history.
+        if session_id:
+            replay = []
+        else:
+            replay = [
+                {"role": self._api_role(message.role), "content": message.text}
+                for message in (history or [])
+                if message.text.strip()
+            ]
+            if self.history_limit is not None and self.history_limit > 0:
+                replay = replay[-self.history_limit :]
+
+        messages: list[dict] = replay
 
         # Build the final user message — may be multipart if attachments are present
         if attachments:
@@ -144,6 +158,7 @@ class HermesAPIExecutor:
         latest_user_message: str,
         history: list[HermesConversationMessage] | None,
         attachments: list[dict] | None,
+        session_id: str | None = None,
     ) -> dict:
         return {
             **self._model_payload(),
@@ -151,6 +166,7 @@ class HermesAPIExecutor:
                 latest_user_message=latest_user_message,
                 history=history,
                 attachments=attachments,
+                session_id=session_id,
             ),
             "stream": stream,
         }
@@ -199,6 +215,7 @@ class HermesAPIExecutor:
             latest_user_message=latest_user_message,
             history=history,
             attachments=attachments,
+            session_id=session_id,
         )
 
         async with httpx.AsyncClient(
@@ -253,6 +270,7 @@ class HermesAPIExecutor:
             latest_user_message=latest_user_message,
             history=history,
             attachments=attachments,
+            session_id=session_id,
         )
 
         async with httpx.AsyncClient(

@@ -2330,6 +2330,7 @@ class HermesMobileConnector:
             executor = HermesAPIExecutor(
                 api_server_url=api_url or "http://localhost:8642",
                 api_server_key=api_key,
+                history_limit=self.settings_for_state(state).hermes_history_limit,
             )
             if await executor.health_check():
                 adapter = HermesAPIRuntimeAdapter(executor)
