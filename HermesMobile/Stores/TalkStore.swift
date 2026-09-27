@@ -28,6 +28,12 @@ final class TalkStore {
     var latencyMetrics = TalkLatencyMetrics()
     var voiceSessionID: UUID?
 
+    /// `true` while the voice session is waiting on an asynchronous Hermes
+    /// delegation. Read-only mirror of the service snapshot so views (e.g. the
+    /// CarPlay voice template) can show a "consulting Hermes" state without
+    /// duplicating delegation bookkeeping.
+    var isDelegationInProgress: Bool { voiceService.snapshot.isDelegationInProgress }
+
     /// Set after a voice session ends; consumed by MainTabView to trigger transcript injection.
     var lastCompletedSession: CompletedVoiceSession?
 

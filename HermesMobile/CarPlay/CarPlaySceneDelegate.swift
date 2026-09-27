@@ -1,9 +1,9 @@
 import CarPlay
 import UIKit
 
-/// Manages the CarPlay scene lifecycle. When the vehicle connects,
-/// we set up a `CPVoiceControlTemplate` as the root — Hermes is a
-/// voice-first AI agent, so the CarPlay experience is just Voice Mode.
+/// Manages the CarPlay scene lifecycle. When the vehicle connects, we set up a
+/// `CPVoiceControlTemplate` as the root — Hermes is a voice-first AI agent, so
+/// the CarPlay experience is just Voice Mode.
 final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
     private var interfaceController: CPInterfaceController?
     private var voiceManager: CarPlayVoiceManager?
@@ -20,7 +20,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         self.voiceManager = manager
 
         Task { @MainActor in
-            manager.configure()
+            await manager.configure()
         }
     }
 
@@ -28,10 +28,15 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         _ templateApplicationScene: CPTemplateApplicationScene,
         didDisconnectInterfaceController interfaceController: CPInterfaceController
     ) {
-        // Do NOT end the voice session — it continues on the phone.
-        // Just release CarPlay-specific references.
-        voiceManager?.tearDown()
+        // The vehicle was unplugged/turned off. Release every CarPlay-specific
+        // reference and close the session this screen opened (a session started
+        // on the iPhone, before connecting, is left untouched).
+        let manager = voiceManager
         voiceManager = nil
         self.interfaceController = nil
+
+        Task { @MainActor in
+            await manager?.tearDown()
+        }
     }
 }
