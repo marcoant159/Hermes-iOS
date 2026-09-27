@@ -1333,6 +1333,16 @@
         }
       }
     },
+    "Pausada enquanto conectado ao CarPlay. A conversa no carro começa pelo botão da tela do CarPlay.": {
+      "localizations": {
+        "pt-BR": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pausada enquanto conectado ao CarPlay. A conversa no carro começa pelo botão da tela do CarPlay."
+          }
+        }
+      }
+    },
     "Pending": {
       "localizations": {
         "pt-BR": {

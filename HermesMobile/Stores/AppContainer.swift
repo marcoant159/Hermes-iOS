@@ -413,6 +413,21 @@ final class AppContainer {
         await wakeWordService.ensureListening()
     }
 
+    /// Called when a CarPlay scene connects. Apple's voice-based conversational
+    /// category forbids wake-word activation in the car, so the listener is
+    /// disarmed and the microphone released for the whole connection.
+    func handleCarPlayConnected() async {
+        await wakeWordService.beginCarPlaySuppression()
+    }
+
+    /// Called when the CarPlay scene disconnects. Clears the suppression and
+    /// restores the previous state (only if the user had the wake word enabled
+    /// and no voice session owns the microphone).
+    func handleCarPlayDisconnected() async {
+        await wakeWordService.endCarPlaySuppression()
+        await startWakeWordIfEnabled()
+    }
+
     private func handlePairingActivated() async {
         isInitialized = false
         chatStore.reset()

@@ -105,6 +105,12 @@ final class LiveWakeWordService {
     /// state, so the UI uses this to avoid showing "Starting…".
     var isSuspendedForExternalCapture: Bool { isSuspended }
 
+    /// `true` while a CarPlay scene is connected. Apple's voice-based
+    /// conversational category forbids activating the app by its wake word in
+    /// the car, so the listener stays disarmed for the whole connection. The
+    /// Settings screen shows a specific message for this state.
+    var isSuspendedForCarPlay: Bool { isCarPlayConnected }
+
     /// Called once the wake phrase (and any same-utterance command) is ready.
     /// The caller starts a GPT Live voice session and injects `command` when it
     /// is non-nil. Async so the microphone is handed over before the callback
@@ -126,6 +132,7 @@ final class LiveWakeWordService {
     private var mediaResetObserver: NSObjectProtocol?
 
     private var isSuspended = false
+    private(set) var isCarPlayConnected = false
     private var capturing = false
     private var triggerSegment = -1
     private var committedCommand = ""
@@ -186,6 +193,14 @@ final class LiveWakeWordService {
     }
 
     func start() async {
+        // Disarmed for the whole CarPlay connection (Apple forbids wake-word
+        // activation of a voice-based conversational app in the car). Never
+        // arm or re-arm until `endCarPlaySuppression()` runs on disconnect.
+        if isCarPlayConnected {
+            emitWakeEvent("listener start ignored while CarPlay is connected")
+            return
+        }
+
         // Already armed: recover instead of bailing out. This is the path taken
         // when the listener was suspended for an external capture and the app
         // re-arms it on foreground; returning at the old `guard !isRunning`
@@ -251,6 +266,9 @@ final class LiveWakeWordService {
     /// external capture finishes. Safe to call repeatedly. Does not disturb an
     /// in-flight wake activation (capturing).
     func ensureListening() async {
+        // A CarPlay connection keeps the microphone disarmed even when the app
+        // comes to the foreground or a voice session ends.
+        guard !isCarPlayConnected else { return }
         guard !capturing else { return }
         if !isRunning {
             await start()
@@ -296,6 +314,35 @@ final class LiveWakeWordService {
         }
     }
 
+    // MARK: - CarPlay arbitration
+
+    /// Disarms the listener for the whole CarPlay connection and releases the
+    /// microphone. Apple's voice-based conversational rules require the app to
+    /// be opened manually on the car screen and forbid activating it by wake
+    /// word, so nothing re-arms the listener until the car disconnects.
+    ///
+    /// The user's saved preference is never changed; only the runtime capture is
+    /// suppressed. A voice session already using the microphone keeps it.
+    func beginCarPlaySuppression() async {
+        guard !isCarPlayConnected else { return }
+        isCarPlayConnected = true
+        if isRunning, !isSuspended {
+            await suspendForExternalCapture()
+        } else {
+            phase = .off
+        }
+        emitWakeEvent("listener suppressed while CarPlay is connected")
+    }
+
+    /// Clears the CarPlay suppression. Does not re-arm by itself: the caller
+    /// re-arms through `AppContainer.startWakeWordIfEnabled()` so a live voice
+    /// session (or a user-disabled preference) is still respected.
+    func endCarPlaySuppression() async {
+        guard isCarPlayConnected else { return }
+        isCarPlayConnected = false
+        emitWakeEvent("listener suppression cleared after CarPlay disconnected")
+    }
+
     // MARK: - Audio recovery
 
     private func handleAudioInterruption(_ type: AVAudioSession.InterruptionType) async {
@@ -303,7 +350,7 @@ final class LiveWakeWordService {
         case .began:
             emitWakeEvent("listener interrupted by system")
         case .ended:
-            guard isRunning, !isSuspended else { return }
+            guard isRunning, !isSuspended, !isCarPlayConnected else { return }
             await listener.recoverIfNeeded()
             if phase == .off { phase = .listening }
             emitWakeEvent("listener re-armed after interruption")
@@ -313,7 +360,7 @@ final class LiveWakeWordService {
     }
 
     private func recoverAudioAfterReset() async {
-        guard isRunning, !isSuspended, !capturing else { return }
+        guard isRunning, !isSuspended, !isCarPlayConnected, !capturing else { return }
         await listener.forceRestart()
         if phase == .off { phase = .listening }
         emitWakeEvent("listener re-armed after media reset")
@@ -350,10 +397,10 @@ final class LiveWakeWordService {
             lastError = message
             Self.logger.error("wake listener failed: \(message, privacy: .public)")
             emitWakeEvent("listener failed: \(message)")
-            guard isRunning, !isSuspended else { return }
+            guard isRunning, !isSuspended, !isCarPlayConnected else { return }
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(Self.failureRetryDelay))
-                guard let self, self.isRunning, !self.isSuspended else { return }
+                guard let self, self.isRunning, !self.isSuspended, !self.isCarPlayConnected else { return }
                 await self.listener.restartIfNeeded()
                 if self.phase == .off {
                     self.phase = .listening

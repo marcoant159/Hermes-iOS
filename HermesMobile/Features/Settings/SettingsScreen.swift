@@ -369,6 +369,9 @@ struct SettingsScreen: View {
             return String(localized: "Turn on to use the wake word. Say \u{201C}\(phrase)\u{201D} to open the GPT Live voice session hands-free, or \u{201C}\(phrase), <question>\u{201D} to send the question straight to Hermes. Keeps the microphone active in the background while the app is running.")
         }
         let wakeWordService = AppContainer.sharedDefault().wakeWordService
+        if wakeWordService.isSuspendedForCarPlay {
+            return String(localized: "Pausada enquanto conectado ao CarPlay. A conversa no carro começa pelo botão da tela do CarPlay.")
+        }
         if let error = wakeWordService.lastError, wakeWordService.phase == .off {
             return String(format: String(localized: "Listener error: %@. Turn the toggle off and on to retry."), error)
         }

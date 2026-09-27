@@ -153,6 +153,53 @@ Enquanto a entitlement não estiver no perfil, o arquivo `HermesMobile-CarPlay.e
 9. Iniciar uma sessão de voz **no iPhone** e só então conectar o carro: ao desconectar, a
    sessão do iPhone deve continuar (o CarPlay só encerra o que ele mesmo abriu).
 
+## Wake word x CarPlay
+
+**Regra Apple (categoria voice-based conversational, iOS 26.4):** no CarPlay o app só
+pode ser aberto manualmente pela tela inicial do carro; **não** pode ser ativado por
+palavra de ativação nem pelo botão do volante, e não pode agir como assistente do sistema.
+
+### O que foi implementado
+
+1. `LiveWakeWordService` ganhou uma arbitragem de CarPlay:
+   - `isCarPlayConnected` (observável) e `isSuspendedForCarPlay` para a UI;
+   - `beginCarPlaySuppression()`: desarma o listener e solta o microfone enquanto o carro
+     estiver conectado (reusa `suspendForExternalCapture()`; a **preferência salva do
+     usuário não muda**);
+   - `endCarPlaySuppression()`: só limpa a flag — quem re-arma é o `AppContainer`, via
+     `startWakeWordIfEnabled()`, para respeitar sessão de voz ativa/preferência.
+   - `start()`, `ensureListening()`, a retentativa após falha, `handleAudioInterruption(.ended)`
+     e `recoverAudioAfterReset()` agora são **no-op** com CarPlay conectado — nada re-arma o
+     mic enquanto o carro está aberto.
+2. `CarPlaySceneDelegate.didConnect/didDisconnect` (`HermesMobile/CarPlay/CarPlaySceneDelegate.swift:22` e `:38`)
+   chamam `AppContainer.handleCarPlayConnected()` / `handleCarPlayDisconnected()`
+   (`HermesMobile/Stores/AppContainer.swift:416` e `:425`). Ao desconectar, o estado anterior
+   volta (se o usuário tinha ligado e nenhuma sessão de voz estiver ativa).
+3. Ajustes: a linha de status da wake word mostra **“Pausada enquanto conectado ao CarPlay.
+   A conversa no carro começa pelo botão da tela do CarPlay.”**
+   (`HermesMobile/Features/Settings/SettingsScreen.swift:371`), com a chave nova no
+   `HermesMobile/Localizable.xcstrings` (pt-BR). O texto tem prioridade sobre “outra captura”
+   e sobre erros.
+
+### Ativações do iPhone não abrem sessão “do sistema” no carro
+
+Isso já era verdade pelo desenho; confirmado no código:
+
+- Wake word: com CarPlay conectado o listener está suspenso (item 1), então
+  `onWakeActivation` (`AppContainer.swift:267`) não dispara enquanto o carro está aberto.
+- Siri/Atalho/Toque Traseiro: `TalkWithHermesIntent.perform()` apenas mostra o overlay **no
+  iPhone** (`startVoiceConversationFromSystem()` em `AppContainer.swift:740` seta
+  `router.isVoiceOverlayPresented`), sem criar sessão. A sessão só nasce quando o
+  `VoiceOverlayScreen` aparece e o usuário toca em iniciar.
+- No carro, a sessão só começa pelo botão do template de voz do CarPlay:
+  `CarPlayVoiceManager.beginSession()` (`CarPlayVoiceManager.swift:191`) → `TalkStore.startSessionDirectly()`.
+  A sincronização de estado (`currentStateIdentifier()`, `:216`) só **reflete** uma sessão
+  já existente; nunca inicia uma.
+- Ao conectar o carro no meio de uma sessão iniciada no iPhone, `beginCarPlaySuppression()`
+  apenas solta o mic da wake word e **não** toca na sessão; e `CarPlayVoiceManager.tearDown()`
+  (`:73`) só encerra a sessão que o próprio CarPlay abriu (`didStartSession`). Ou seja, o
+  carro nunca "assume" uma sessão do sistema/iPhone.
+
 **Roteiro manual no Simulator (Mac, para dev):**
 1. Build p/ Simulator com o override:
    `xcodebuild build -project HermesMobile.xcodeproj -scheme HermesMobile -configuration Debug -sdk iphonesimulator -destination 'id=<UDID>' CODE_SIGN_ENTITLEMENTS=HermesMobile/HermesMobile-CarPlay.entitlements CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= CODE_SIGN_IDENTITY=- PROVISIONING_PROFILE_SPECIFIER=`

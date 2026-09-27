@@ -20,6 +20,9 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         self.voiceManager = manager
 
         Task { @MainActor in
+            // Apple forbids activating the app by its wake word while it is open
+            // on the car screen, so keep the listener disarmed while connected.
+            await AppContainer.sharedDefault().handleCarPlayConnected()
             await manager.configure()
         }
     }
@@ -37,6 +40,8 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 
         Task { @MainActor in
             await manager?.tearDown()
+            // Restore the previous wake-word state now that the car is gone.
+            await AppContainer.sharedDefault().handleCarPlayDisconnected()
         }
     }
 }
