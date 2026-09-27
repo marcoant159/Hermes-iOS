@@ -50,7 +50,7 @@ struct InboxItemRow: View {
 
             Spacer()
 
-            Text(item.priority.rawValue.capitalized)
+            Text(item.priority.displayLabel)
                 .font(Design.Typography.caption2.weight(.semibold))
                 .foregroundStyle(Design.Colors.secondaryForeground)
 
@@ -96,6 +96,6 @@ struct InboxItemRow: View {
     }
 
     private var defaultPrimaryActionTitle: String {
-        item.type == .approval ? "Approve" : "Open"
+        item.type == .approval ? String(localized: "Approve") : String(localized: "Open")
     }
 }

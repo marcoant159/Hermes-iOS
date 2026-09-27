@@ -45,7 +45,7 @@ struct StatusCardView: View {
         .padding(.horizontal, Design.Spacing.md)
     }
 
-    private func statusRow(_ label: String, value: String) -> some View {
+    private func statusRow(_ label: LocalizedStringKey, value: String) -> some View {
         HStack {
             Text(label)
                 .font(Design.Typography.callout)

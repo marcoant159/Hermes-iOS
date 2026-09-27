@@ -16,6 +16,11 @@ enum HapticEngine {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 
+    /// Light impact when a voice session starts.
+    static func voiceSessionStarted() {
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+    }
+
     /// Error notification for failed operations.
     static func error() {
         UINotificationFeedbackGenerator().notificationOccurred(.error)

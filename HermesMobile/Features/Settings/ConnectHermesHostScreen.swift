@@ -148,7 +148,7 @@ struct ConnectHermesHostScreen: View {
         .frame(minHeight: Design.Size.minTapTarget)
     }
 
-    private func setupStep(number: String, command: String, detail: String) -> some View {
+    private func setupStep(number: String, command: String, detail: LocalizedStringKey) -> some View {
         HStack(alignment: .top, spacing: Design.Spacing.sm) {
             Text(number)
                 .font(.system(size: 13, weight: .bold, design: .rounded))
@@ -168,7 +168,7 @@ struct ConnectHermesHostScreen: View {
         }
     }
 
-    private func actionRow(icon: String, label: String, color: Color) -> some View {
+    private func actionRow(icon: String, label: LocalizedStringKey, color: Color) -> some View {
         HStack(spacing: Design.Spacing.sm) {
             Image(systemName: icon)
                 .font(.system(size: 14))
@@ -229,26 +229,26 @@ struct ConnectHermesHostScreen: View {
     private var statusTitle: String {
         switch hostStore.connectionState {
         case .online:
-            return "Connected"
+            return String(localized: "Connected")
         case .offline:
-            return "Offline"
+            return String(localized: "Offline")
         case .unreachable:
-            return "Status Unavailable"
+            return String(localized: "Status Unavailable")
         case .notConnected:
-            return "No Host"
+            return String(localized: "No Host")
         }
     }
 
     private var statusSubtitle: String {
         switch hostStore.connectionState {
         case .online:
-            return "Your Hermes agent is ready"
+            return String(localized: "Your Hermes agent is ready")
         case .offline:
-            return "Waiting for the connector to come online"
+            return String(localized: "Waiting for the connector to come online")
         case .unreachable:
-            return hostStore.lastErrorMessage ?? "We couldn't refresh host status from the relay."
+            return hostStore.lastErrorMessage ?? String(localized: "We couldn't refresh host status from the relay.")
         case .notConnected:
-            return "Set up from your Hermes machine"
+            return String(localized: "Set up from your Hermes machine")
         }
     }
 }

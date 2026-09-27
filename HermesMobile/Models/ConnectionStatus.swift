@@ -8,10 +8,10 @@ enum ConnectionStatus: String, Codable, Hashable, Sendable {
 
     var displayLabel: String {
         switch self {
-        case .connected: "Connected"
-        case .connecting: "Connecting"
-        case .disconnected: "Disconnected"
-        case .error: "Error"
+        case .connected: String(localized: "Connected")
+        case .connecting: String(localized: "Connecting")
+        case .disconnected: String(localized: "Disconnected")
+        case .error: String(localized: "Error")
         }
     }
 

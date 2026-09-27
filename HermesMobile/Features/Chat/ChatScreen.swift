@@ -160,7 +160,7 @@ struct ChatScreen: View {
                     .font(Design.Typography.callout)
                     .foregroundStyle(Design.Colors.foreground)
                     .lineLimit(1)
-                Text(summary.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                Text(summary.updatedAt, style: .relative)
                     .font(Design.Typography.caption)
                     .foregroundStyle(Design.Colors.secondaryForeground)
             }
@@ -227,13 +227,13 @@ struct ChatScreen: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             HStack(spacing: Design.Spacing.xs) {
-                GlassCircleButton(icon: "list.bullet", accessibilityLabel: "Conversations") {
+                GlassCircleButton(icon: "list.bullet", accessibilityLabel: String(localized: "Conversations")) {
                     showConversationList = true
                 }
-                GlassCircleButton(icon: "square.and.pencil", accessibilityLabel: "New conversation") {
+                GlassCircleButton(icon: "square.and.pencil", accessibilityLabel: String(localized: "New conversation")) {
                     Task { await startNewConversation() }
                 }
-                GlassCircleButton(icon: "gearshape", accessibilityLabel: "Open settings") {
+                GlassCircleButton(icon: "gearshape", accessibilityLabel: String(localized: "Open settings")) {
                     router.presentSheet(.settings)
                 }
             }
@@ -478,13 +478,13 @@ struct ChatScreen: View {
     private var connectionStatusLabel: String {
         switch hostStore.connectionState {
         case .online:
-            return "Online"
+            return String(localized: "Online")
         case .offline:
-            return "Offline"
+            return String(localized: "Offline")
         case .unreachable:
-            return "Unreachable"
+            return String(localized: "Unreachable")
         case .notConnected:
-            return "Not Connected"
+            return String(localized: "Not Connected")
         }
     }
 
@@ -522,6 +522,7 @@ struct ChatScreen: View {
                     }
                 }
                 .padding(.vertical, Design.Spacing.md)
+                .animation(Design.Motion.standard, value: chatStore.conversation?.messages.count ?? 0)
             }
             .scrollDismissesKeyboard(.interactively)
             .redacted(reason: chatStore.isLoading ? .placeholder : [])
@@ -578,35 +579,35 @@ struct ChatScreen: View {
     private var connectionBannerTitle: String {
         switch hostStore.connectionState {
         case .online:
-            return "Hermes host online"
+            return String(localized: "Hermes host online")
         case .offline:
-            return "Hermes host offline"
+            return String(localized: "Hermes host offline")
         case .unreachable:
-            return "Could not refresh host status"
+            return String(localized: "Could not refresh host status")
         case .notConnected:
-            return "No Hermes host connected"
+            return String(localized: "No Hermes host connected")
         }
     }
 
     private var connectionBannerMessage: String {
         switch hostStore.connectionState {
         case .online:
-            return "Your Hermes host is connected."
+            return String(localized: "Your Hermes host is connected.")
         case .offline:
-            return "Messages will queue until your Hermes host reconnects."
+            return String(localized: "Messages will queue until your Hermes host reconnects.")
         case .unreachable:
-            return hostStore.lastErrorMessage ?? "Check your relay connection or refresh your session."
+            return hostStore.lastErrorMessage ?? String(localized: "Check your relay connection or refresh your session.")
         case .notConnected:
-            return "Pair a Hermes host from Settings to send messages through your Mac."
+            return String(localized: "Pair a Hermes host from Settings to send messages through your Mac.")
         }
     }
 
     private var connectionBannerActionLabel: String {
         switch hostStore.connectionState {
         case .online, .offline, .notConnected:
-            return "Settings"
+            return String(localized: "Settings")
         case .unreachable:
-            return "Retry"
+            return String(localized: "Retry")
         }
     }
 

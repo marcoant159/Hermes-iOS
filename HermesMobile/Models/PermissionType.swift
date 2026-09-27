@@ -14,14 +14,14 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
 
     var displayLabel: String {
         switch self {
-        case .location: "Location"
-        case .health: "Health"
-        case .notifications: "Notifications"
-        case .microphone: "Microphone"
-        case .camera: "Camera"
-        case .photos: "Photos"
-        case .motion: "Motion & Activity"
-        case .speechRecognition: "Speech Recognition"
+        case .location: String(localized: "Location")
+        case .health: String(localized: "Health")
+        case .notifications: String(localized: "Notifications")
+        case .microphone: String(localized: "Microphone")
+        case .camera: String(localized: "Camera")
+        case .photos: String(localized: "Photos")
+        case .motion: String(localized: "Motion & Activity")
+        case .speechRecognition: String(localized: "Speech Recognition")
         }
     }
 
@@ -54,21 +54,21 @@ enum PermissionType: String, Codable, CaseIterable, Identifiable, Hashable, Send
     var explanation: String {
         switch self {
         case .location:
-            "Hermes uses your location to provide contextual recommendations, weather updates, and nearby suggestions."
+            String(localized: "Hermes uses your location to provide contextual recommendations, weather updates, and nearby suggestions.")
         case .health:
-            "Access your health data to offer personalized wellness insights, activity tracking, and sleep recommendations."
+            String(localized: "Access your health data to offer personalized wellness insights, activity tracking, and sleep recommendations.")
         case .notifications:
-            "Receive timely reminders, task updates, and important alerts from Hermes."
+            String(localized: "Receive timely reminders, task updates, and important alerts from Hermes.")
         case .microphone:
-            "Voice conversations with Hermes in Talk Mode."
+            String(localized: "Voice conversations with Hermes in Talk Mode.")
         case .camera:
-            "Capture photos and documents for Hermes to analyze, annotate, or organize."
+            String(localized: "Capture photos and documents for Hermes to analyze, annotate, or organize.")
         case .photos:
-            "Access your photo library to help organize, search, and create albums based on your preferences."
+            String(localized: "Access your photo library to help organize, search, and create albums based on your preferences.")
         case .motion:
-            "Hermes uses motion data to understand your current activity for contextual awareness."
+            String(localized: "Hermes uses motion data to understand your current activity for contextual awareness.")
         case .speechRecognition:
-            "On-device speech recognition for dictation in the chat composer."
+            String(localized: "On-device speech recognition for dictation in the chat composer.")
         }
     }
 

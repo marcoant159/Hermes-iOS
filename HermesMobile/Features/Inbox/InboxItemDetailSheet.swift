@@ -47,11 +47,11 @@ struct InboxItemDetailSheet: View {
 
     private var metadataSection: some View {
         HStack(spacing: Design.Spacing.md) {
-            Label(item.status.rawValue.capitalized, systemImage: "checklist")
+            Label(item.status.displayLabel, systemImage: "checklist")
                 .font(Design.Typography.caption)
                 .foregroundStyle(Design.Colors.secondaryForeground)
 
-            Label(item.priority.rawValue.capitalized, systemImage: "flag")
+            Label(item.priority.displayLabel, systemImage: "flag")
                 .font(Design.Typography.caption)
                 .foregroundStyle(Design.Colors.secondaryForeground)
         }

@@ -9,11 +9,11 @@ enum InboxItemType: String, Codable, Hashable, Sendable, CaseIterable {
 
     var displayLabel: String {
         switch self {
-        case .approval: "Approval"
-        case .notification: "Notification"
-        case .reminder: "Reminder"
-        case .suggestion: "Suggestion"
-        case .alert: "Alert"
+        case .approval: String(localized: "Approval")
+        case .notification: String(localized: "Notification")
+        case .reminder: String(localized: "Reminder")
+        case .suggestion: String(localized: "Suggestion")
+        case .alert: String(localized: "Alert")
         }
     }
 

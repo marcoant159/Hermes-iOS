@@ -10,12 +10,12 @@ enum VoiceState: String, Codable, Hashable, Sendable, CaseIterable {
 
     var displayLabel: String {
         switch self {
-        case .idle: "Ready"
-        case .listening: "Listening"
-        case .thinking: "Thinking"
-        case .speaking: "Speaking"
-        case .interrupted: "Interrupted"
-        case .disconnected: "Disconnected"
+        case .idle: String(localized: "Ready")
+        case .listening: String(localized: "Listening")
+        case .thinking: String(localized: "Thinking")
+        case .speaking: String(localized: "Speaking")
+        case .interrupted: String(localized: "Interrupted")
+        case .disconnected: String(localized: "Disconnected")
         }
     }
 
@@ -53,13 +53,13 @@ enum TalkConnectionState: String, Codable, Hashable, Sendable {
 
     var displayLabel: String {
         switch self {
-        case .idle: "Idle"
-        case .checking: "Checking"
-        case .ready: "Ready"
-        case .connecting: "Connecting"
-        case .connected: "Connected"
-        case .blocked: "Unavailable"
-        case .failed: "Failed"
+        case .idle: String(localized: "Idle")
+        case .checking: String(localized: "Checking")
+        case .ready: String(localized: "Ready")
+        case .connecting: String(localized: "Connecting")
+        case .connected: String(localized: "Connected")
+        case .blocked: String(localized: "Unavailable")
+        case .failed: String(localized: "Failed")
         }
     }
 }
@@ -71,9 +71,9 @@ enum TranscriptSpeaker: String, Codable, Hashable, Sendable {
 
     var displayLabel: String {
         switch self {
-        case .user: "You"
+        case .user: String(localized: "You")
         case .hermes: "Hermes"
-        case .system: "System"
+        case .system: String(localized: "System")
         }
     }
 }

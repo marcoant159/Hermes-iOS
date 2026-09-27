@@ -91,7 +91,7 @@ struct AttachmentPickerSheet: View {
         }
     }
 
-    private func attachmentButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
+    private func attachmentButton(icon: String, label: LocalizedStringKey, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             VStack(spacing: Design.Spacing.sm) {
                 Image(systemName: icon)

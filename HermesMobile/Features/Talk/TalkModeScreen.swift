@@ -3,6 +3,11 @@ import SwiftUI
 struct TalkModeScreen: View {
     @Environment(TalkStore.self) private var talkStore
     @Environment(AppSessionStore.self) private var sessionStore
+    @Environment(SettingsStore.self) private var settingsStore
+
+    private var muteLabel: LocalizedStringKey {
+        talkStore.isMuted ? "Unmute" : "Mute"
+    }
 
     var body: some View {
         ZStack {
@@ -98,7 +103,7 @@ struct TalkModeScreen: View {
                         .background(Design.Colors.surface)
                         .clipShape(Circle())
                 }
-                .accessibilityLabel(talkStore.isMuted ? "Unmute" : "Mute")
+                .accessibilityLabel(muteLabel)
 
                 // End session button
                 Button {
@@ -147,6 +152,9 @@ struct TalkModeScreen: View {
     // MARK: - Actions
 
     private func startSession() {
+        if settingsStore.settings.hapticFeedbackEnabled {
+            HapticEngine.voiceSessionStarted()
+        }
         Task { await talkStore.startSession() }
     }
 
