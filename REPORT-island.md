@@ -84,10 +84,14 @@ App Shortcuts, Toque Traseiro, Control Center) usando o que o app já tem
 - IDs do `project.pbxproj` conferidos (24 hex únicos; cada build file referenciado
   uma vez no Sources do target correto; chaves `{}` balanceadas).
 - **CI (branch `wip/island`)**:
-  - `Build unsigned IPA` — run `36284816937` ✅ (o primeiro run `36284736941`
-    falhou por `static var` não-concorrente no Swift 6; corrigido para `static let`).
-  - `Simulator screenshots` — run `36284916413` ✅, 13 screenshots + `test.log`
-    com `** TEST SUCCEEDED **`, `Executed 1 test, with 0 failures`.
+  - `Build unsigned IPA` — runs `36284816937` e `36285659292` ✅ (o primeiro run
+    `36284736941` falhou por `static var` não-concorrente no Swift 6; corrigido
+    para `static let`).
+  - `Simulator screenshots` — runs `36284916413` e `36285750755` ✅, 13 screenshots
+    + `test.log` com `** TEST SUCCEEDED **`, `Executed 1 test, with 0 failures`.
+  - Os runs finais (`36285659292` / `36285750755`) foram disparados no commit
+    `ab635f3`; os commits seguintes são apenas atualizações deste relatório
+    (Markdown), que não entram na compilação.
 
 ## Pendente
 - Teste físico no iPhone do Marco (Dynamic Island, Lock Screen, Siri, Toque
