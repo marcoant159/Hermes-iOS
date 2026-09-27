@@ -216,7 +216,10 @@ final class AppContainer {
                 motionService: liveMotionService
             ),
             settingsStore: settingsStore,
-            talkStore: TalkStore(voiceService: voiceService),
+            talkStore: TalkStore(
+                voiceService: voiceService,
+                engineNameProvider: { settingsStore.settings.voiceEngineChoice.liveActivityEngineName }
+            ),
             wakeWordService: LiveWakeWordService(),
             sensorUploadService: sensorUploadService,
             apiClient: apiClient,
@@ -344,6 +347,7 @@ final class AppContainer {
         await registerStoredPushTokenIfNeeded()
         await sensorUploadService?.handleAppDidBecomeActive()
         talkStore.handleAppDidBecomeActive()
+        chatStore.endBackgroundResponseActivityIfNeeded()
         await talkStore.refreshReadiness()
         await startWakeWordIfEnabled()
         reconcileLiveActivities()
@@ -355,6 +359,7 @@ final class AppContainer {
     /// keeps the wake listener alive, but the audio session may have been torn
     /// down by a just-ended voice session; re-arm it so "oi hermes" still works.
     func handleAppDidEnterBackground() async {
+        chatStore.beginBackgroundResponseActivityIfNeeded()
         await reportAppStateIfNeeded("background")
         await startWakeWordIfEnabled()
     }
@@ -727,5 +732,28 @@ final class AppContainer {
             return
         }
         LiveActivityService.endAllActivities()
+    }
+
+    /// Opens the GPT Live voice overlay from a system entry point (Siri,
+    /// Shortcuts, Back Tap, Control Center). Reuses the existing deeplink
+    /// destination instead of duplicating session logic.
+    func startVoiceConversationFromSystem() {
+        guard pairingStore.isPaired else { return }
+        router.activeSheet = nil
+        router.resetAll()
+        router.selectedTab = .chat
+        router.isVoiceOverlayPresented = true
+    }
+}
+
+private extension VoiceEngineChoice {
+    /// Short engine label shown on the Live Activity ("GPT Live", not the
+    /// settings picker's longer "GPT Live (Codex)" name).
+    var liveActivityEngineName: String {
+        switch self {
+        case .auto, .codexLive: "GPT Live"
+        case .codexRealtime: "GPT Realtime"
+        case .geminiLive: "Gemini Live"
+        }
     }
 }

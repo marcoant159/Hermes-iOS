@@ -44,6 +44,7 @@ final class TalkStore {
     private static let wakeWordIdleTimeout: TimeInterval = 30
 
     private let voiceService: any VoiceSessionServiceProtocol
+    private let engineNameProvider: (@MainActor () -> String)?
     private let liveActivity = LiveActivityService()
     private var eventTask: Task<Void, Never>?
     private var wakeWordIdleTask: Task<Void, Never>?
@@ -51,11 +52,23 @@ final class TalkStore {
     private var lastWakeWordActivityAt = Date()
     private var lastActivityTranscripts: [TranscriptItem] = []
     private var lastActivityVoiceState: VoiceState = .idle
+    private var delegationWasActive = false
+    private var currentAnswerPreview: String?
+    private var answerPreviewTask: Task<Void, Never>?
 
-    init(voiceService: any VoiceSessionServiceProtocol) {
+    init(
+        voiceService: any VoiceSessionServiceProtocol,
+        engineNameProvider: (@MainActor () -> String)? = nil
+    ) {
         self.voiceService = voiceService
+        self.engineNameProvider = engineNameProvider
         applySnapshot(voiceService.snapshot)
         subscribeToEvents()
+    }
+
+    /// Human-readable name of the configured voice engine, shown on the Live Activity.
+    var voiceEngineName: String {
+        engineNameProvider?() ?? "GPT Live"
     }
 
     func refreshReadiness() async {
@@ -77,7 +90,7 @@ final class TalkStore {
         await voiceService.startSession()
         applySnapshot(voiceService.snapshot)
         if isSessionActive {
-            liveActivity.startVoiceSession()
+            liveActivity.startVoiceSession(engineName: voiceEngineName)
         }
     }
 
@@ -85,7 +98,7 @@ final class TalkStore {
         await voiceService.startSession()
         applySnapshot(voiceService.snapshot)
         if isSessionActive {
-            liveActivity.startVoiceSession()
+            liveActivity.startVoiceSession(engineName: voiceEngineName)
         }
     }
 
@@ -130,7 +143,7 @@ final class TalkStore {
 
         if isSessionActive {
             Self.logger.info("wake session active")
-            liveActivity.startVoiceSession()
+            liveActivity.startVoiceSession(engineName: voiceEngineName)
         } else {
             let reason = blockedReason ?? statusMessage ?? "unknown"
             Self.logger.error("wake session failed to activate: \(reason, privacy: .public)")
@@ -175,6 +188,10 @@ final class TalkStore {
         wakeWordSessionActivated = false
         wakeWordIdleTask?.cancel()
         wakeWordIdleTask = nil
+        answerPreviewTask?.cancel()
+        answerPreviewTask = nil
+        currentAnswerPreview = nil
+        delegationWasActive = false
 
         // End Live Activity
         liveActivity.endActivity()
@@ -237,6 +254,10 @@ final class TalkStore {
         wakeWordSessionActivated = false
         wakeWordIdleTask?.cancel()
         wakeWordIdleTask = nil
+        answerPreviewTask?.cancel()
+        answerPreviewTask = nil
+        currentAnswerPreview = nil
+        delegationWasActive = false
     }
 
     private func subscribeToEvents() {
@@ -290,29 +311,89 @@ final class TalkStore {
         }
 
         // Update Live Activity on voice state changes
-        if isSessionActive {
-            let status: String
-            switch snapshot.voiceState {
-            case .listening:
-                status = isWakeWordSession ? "Conversando" : "Listening"
-            case .thinking:
-                if isWakeWordSession {
-                    status = snapshot.isDelegationInProgress ? "Consultando o Hermes" : "Pensando..."
-                } else {
-                    status = snapshot.statusMessage ?? "Thinking..."
-                }
-            case .speaking:
-                status = isWakeWordSession ? "Conversando" : "Speaking"
-            default:
-                status = snapshot.statusMessage ?? "Connected"
-            }
-            // Extract tool name from status message if it mentions a tool
-            let toolName = snapshot.isDelegationInProgress
-                ? "Consultando o Hermes"
-                : (snapshot.statusMessage?.contains("working") == true ? snapshot.statusMessage : nil)
-            liveActivity.updateVoiceState(status, toolName: toolName)
-        }
+        pushVoiceActivity(snapshot)
 
         onSessionStateChanged?()
+    }
+
+    // MARK: - Live Activity
+
+    private func pushVoiceActivity(_ snapshot: TalkSessionSnapshot) {
+        guard isSessionActive else { return }
+
+        if snapshot.isDelegationInProgress {
+            delegationWasActive = true
+            answerPreviewTask?.cancel()
+            answerPreviewTask = nil
+            currentAnswerPreview = nil
+        } else if delegationWasActive {
+            delegationWasActive = false
+            currentAnswerPreview = lastSnippet(from: snapshot, speaker: .hermes)
+            answerPreviewTask?.cancel()
+            answerPreviewTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(8))
+                guard let self, !Task.isCancelled else { return }
+                self.currentAnswerPreview = nil
+                self.pushVoiceActivity(self.voiceService.snapshot)
+            }
+        }
+
+        let isDelegating = snapshot.isDelegationInProgress
+        let phase: String
+        let status: String
+        switch snapshot.voiceState {
+        case .listening:
+            phase = "listening"
+            status = "Ouvindo"
+        case .thinking:
+            if isDelegating {
+                phase = "delegating"
+                status = "Consultando o Hermes…"
+            } else {
+                phase = "thinking"
+                status = "Pensando…"
+            }
+        case .speaking:
+            phase = "speaking"
+            status = "Falando"
+        case .interrupted:
+            phase = "thinking"
+            status = "Interrompido"
+        case .disconnected:
+            phase = "thinking"
+            status = "Reconectando…"
+        default:
+            if connectionState == .connecting {
+                phase = "connecting"
+                status = "Conectando…"
+            } else {
+                phase = "thinking"
+                status = "Conectado"
+            }
+        }
+
+        let progress: Double? = (phase == "delegating" || phase == "thinking")
+            ? min(0.95, 0.08 + snapshot.sessionDuration / 60.0)
+            : nil
+
+        liveActivity.updateVoiceState(
+            status,
+            phase: phase,
+            toolName: isDelegating ? "hermes_delegate" : nil,
+            engineName: voiceEngineName,
+            prompt: lastSnippet(from: snapshot, speaker: .user),
+            answerPreview: currentAnswerPreview,
+            progress: progress,
+            isMuted: snapshot.isMuted
+        )
+    }
+
+    private func lastSnippet(from snapshot: TalkSessionSnapshot, speaker: TranscriptSpeaker) -> String? {
+        guard let text = snapshot.transcriptItems.last(where: {
+            $0.speaker == speaker && !$0.text.isEmpty
+        })?.text else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return String(trimmed.prefix(140))
     }
 }
