@@ -33,10 +33,14 @@ Branch: `wip/ui-ptbr`. Objetivo: localização pt-BR via String Catalog + polime
 
 ## Como foi validado
 
-- **Build unsigned IPA** — run `36285264906`, branch `wip/ui-ptbr`, success (2m29s).
-- **Simulator screenshots (light, en)** — run `36285778287`, success; `Executed 1 test,
+Validação final feita no tip `9b0f776` (branch `wip/ui-ptbr`):
+
+- **Build unsigned IPA** — run `36286259415`, success.
+- **Simulator screenshots (light, en)** — run `36286338662`, success; `Executed 1 test,
   with 0 failures`; 13 PNGs gerados (`01-onboarding` … `13-voice-mode`), cada passo achou o
   elemento em inglês (tour continua verde, `accessibilityIdentifier` intacto).
+  - Rodada intermediária do código (antes do commit só de docs): build `36285264906` e tour
+    `36285778287`, ambos verdes.
   - A 1ª tentativa após o 2º commit (`36285395005`) reproduziu a **flakiness pré-existente**
     de pareamento já documentada em `REPORT-tour-more.md`: o app ficou na tela de pareamento e
     só gerou `01`–`03`. Reexecução passou limpa (mesmo sintoma e desfecho do relatório citado).
