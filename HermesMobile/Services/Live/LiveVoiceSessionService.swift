@@ -1018,9 +1018,11 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         return response.delegationId
     }
 
-    /// Polls the delegation status every 2 s for up to 10 minutes without
-    /// blocking the realtime loop, nudging the model with short commentary
-    /// lines while it waits.
+    /// Polls the delegation status with a short adaptive interval (0.5 s growing
+    /// to 2 s) for up to 10 minutes without blocking the realtime loop, nudging
+    /// the model with short commentary lines while it waits. Polling fast up
+    /// front means a quick delegation is spoken with minimal delay, while the
+    /// backoff keeps long delegations from hammering the relay.
     private func pollHermesDelegation(delegationID: String, itemID: String?) async throws -> String {
         guard let voiceSessionID else {
             throw RelayAPIClient.ClientError.requestFailed("Hermes tool delegation is unavailable.")
@@ -1028,6 +1030,7 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
         let path = "talk/session/\(voiceSessionID.uuidString.lowercased())/delegations/\(delegationID)"
         let deadline = Date().addingTimeInterval(10 * 60)
         var lastCommentaryAt = Date()
+        var pollInterval: TimeInterval = 0.5
         while Date() < deadline {
             try Task.checkCancellation()
             let response: TalkDelegationStatusResponse = try await performAuthorizedRequest { [self] in
@@ -1049,7 +1052,8 @@ final class LiveVoiceSessionService: NSObject, VoiceSessionServiceProtocol {
                         text: "Ainda consultando…"
                     )
                 }
-                try await Task.sleep(for: .seconds(2))
+                try await Task.sleep(for: .seconds(pollInterval))
+                pollInterval = min(pollInterval * 2, 2.0)
             }
         }
         throw RelayAPIClient.ClientError.requestFailed("O Hermes está demorando mais que o esperado. Tente novamente.")

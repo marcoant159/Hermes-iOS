@@ -220,14 +220,30 @@ final class LiveHermesClient: HermesClientProtocol {
 
                     do {
                         let donePayload = try await self.streamJobEvents(jobId: jobId, continuation: continuation)
-                        let refreshedConversation = await self.reloadConversationForStreaming()
-                        let finalMessage = self.resolveFinalMessage(
-                            jobId: jobId,
-                            donePayload: donePayload,
-                            conversation: refreshedConversation ?? self.currentConversation
-                        )
-                        continuation.yield(.finished(finalMessage, donePayload?.usage, donePayload?.diff))
-                        continuation.finish()
+                        if donePayload?.message != nil {
+                            // Fast path: the done event already carries the final
+                            // message, so finish the UI right away and refresh the
+                            // conversation in the background instead of blocking on
+                            // an extra round-trip through the relay.
+                            let finalMessage = self.resolveFinalMessage(
+                                jobId: jobId,
+                                donePayload: donePayload,
+                                conversation: self.currentConversation
+                            )
+                            self.applyStreamedResult(finalMessage, usage: donePayload?.usage)
+                            continuation.yield(.finished(finalMessage, donePayload?.usage, donePayload?.diff))
+                            continuation.finish()
+                            Task { _ = await self.reloadConversationForStreaming() }
+                        } else {
+                            let refreshedConversation = await self.reloadConversationForStreaming()
+                            let finalMessage = self.resolveFinalMessage(
+                                jobId: jobId,
+                                donePayload: donePayload,
+                                conversation: refreshedConversation ?? self.currentConversation
+                            )
+                            continuation.yield(.finished(finalMessage, donePayload?.usage, donePayload?.diff))
+                            continuation.finish()
+                        }
                     } catch {
                         Self.logger.warning("SSE stream error: \(error.localizedDescription)")
                         continuation.yield(.failed("Stream interrupted"))
@@ -479,6 +495,30 @@ final class LiveHermesClient: HermesClientProtocol {
                 continue
             }
         }
+    }
+
+    /// Folds a streamed reply into the locally cached conversation so the UI can
+    /// finalize without waiting for a `conversations/current` round-trip. A
+    /// background refresh then reconciles server-assigned ids and metadata.
+    private func applyStreamedResult(_ finalMessage: Message, usage: TokenUsage?) {
+        guard var conversation = currentConversation else { return }
+
+        if let index = conversation.messages.firstIndex(where: { $0.id == finalMessage.id }) {
+            conversation.messages[index] = finalMessage
+        } else if let jobID = finalMessage.jobID,
+                  let index = conversation.messages.firstIndex(where: {
+                      $0.jobID == jobID && $0.sender == .hermes
+                  }) {
+            conversation.messages[index] = finalMessage
+        } else {
+            conversation.messages.append(finalMessage)
+        }
+
+        if let usage {
+            conversation.latestUsage = usage
+        }
+        conversation.lastActivity = finalMessage.timestamp
+        currentConversation = conversation
     }
 
     private func reloadConversationForStreaming() async -> Conversation? {
