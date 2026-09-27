@@ -5,7 +5,7 @@ import Foundation
 /// The wake word is matched against on-device dictation transcripts, which
 /// routinely mangle uncommon proper nouns. Each preset therefore carries the
 /// canonical phrase plus the transcription variants that the on-device model is
-/// known to emit (e.g. "Hermes" -> "ermes"/"hermis"/"é mesmo"). Custom phrases
+/// known to emit (e.g. "Hermes" -> "ermes"/"hermis"). Custom phrases
 /// fall back to normalization + a small per-word edit distance.
 enum WakePhrasePreset: String, Codable, CaseIterable, Hashable, Sendable, Identifiable {
     case oiHermes
@@ -120,7 +120,7 @@ extension WakePhrase {
                 var value = min(
                     previous[j] + 1,
                     current[j - 1] + 1,
-                    previousPrevious[j - 1] + cost
+                    previous[j - 1] + cost
                 )
                 if i > 1, j > 1, a[i - 1] == b[j - 2], a[i - 2] == b[j - 1] {
                     value = min(value, previousPrevious[j - 2] + 1)
@@ -242,6 +242,17 @@ extension WakePhrase {
         // Bare activation word at the very start.
         if Self.tokenMatches(tokens[0].folded, target: activation, preset: preset) {
             return 0
+        }
+
+        // Optional greeting before a single-word phrase: "oi atlas", "e aí atlas".
+        var start = 0
+        if tokens.count > 2, tokens[0].folded == "e", tokens[1].folded == "ai" {
+            start = 2
+        } else if tokens.count > 1, Self.optionalPrefixes.contains(tokens[0].folded) {
+            start = 1
+        }
+        if start > 0, Self.tokenMatches(tokens[start].folded, target: activation, preset: preset) {
+            return start
         }
 
         // Multi-word phrases also accept the activation word at the start when

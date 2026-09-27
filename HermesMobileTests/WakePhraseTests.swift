@@ -74,11 +74,10 @@ struct WakePhraseTests {
         #expect(phrase.match(in: "ermes, que horas são") != nil)
     }
 
-    @Test func knownPrefixVariantStillActivates() {
-        // "é mesmo" folds to ["e", "mesmo"]: "e" is a known prefix and "mesmo"
-        // is within one edit of "hermes".
+    @Test func commonPhraseSimilarToHermesDoesNotActivate() {
+        // "é mesmo" is everyday speech; it must not open a voice session.
         let phrase = WakePhrase(preset: .oiHermes)
-        #expect(phrase.match(in: "é mesmo, tudo bem") != nil)
+        #expect(phrase.match(in: "é mesmo, tudo bem") == nil)
     }
 
     @Test func optionalPrefixesAreAcceptedForCustomPhrases() {
