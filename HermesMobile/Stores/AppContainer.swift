@@ -239,6 +239,9 @@ final class AppContainer {
         settingsStore.onRelayConfigurationChanged = { _ in
             await refreshUnpairedRelayContext()
         }
+        settingsStore.onWakePhraseChanged = { [weak container] settings in
+            container?.wakeWordService.apply(settings: settings)
+        }
 
         runtimePairingStore.onPairingChanged = { [weak container] isPaired in
             if isPaired {
@@ -394,6 +397,8 @@ final class AppContainer {
     /// Arms the hands-free wake word listener when the user enabled it.
     private func startWakeWordIfEnabled() async {
         guard settingsStore.settings.wakeWordEnabled else { return }
+        // Keep the matcher in sync with the configured activation phrase.
+        wakeWordService.apply(settings: settingsStore.settings)
         // A live voice session owns the microphone; keep the listener paused
         // until it ends instead of fighting it for the mic.
         if talkStore.isSessionActive {

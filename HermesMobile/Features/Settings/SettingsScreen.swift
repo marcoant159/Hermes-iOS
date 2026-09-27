@@ -310,6 +310,51 @@ struct SettingsScreen: View {
                     isOn: wakeWordBinding
                 )
 
+                if settingsStore.settings.wakeWordEnabled {
+                    VStack(alignment: .leading, spacing: Design.Spacing.xs) {
+                        Text("Activation phrase")
+                            .font(Design.Typography.caption.weight(.semibold))
+                            .foregroundStyle(Design.Colors.secondaryForeground)
+
+                        ForEach(WakePhrasePreset.allCases) { preset in
+                            Button {
+                                settingsStore.settings.wakePhrasePreset = preset
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(preset.displayName)
+                                        if let canonical = preset.canonicalPhrase {
+                                            Text("\u{201C}\(canonical)\u{201D}")
+                                                .font(Design.Typography.caption)
+                                                .foregroundStyle(Design.Colors.secondaryForeground)
+                                        }
+                                    }
+                                    Spacer(minLength: Design.Spacing.sm)
+                                    if settingsStore.settings.wakePhrasePreset == preset {
+                                        Image(systemName: "checkmark")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(Design.Brand.accent)
+                                    }
+                                }
+                                .font(Design.Typography.callout)
+                                .foregroundStyle(Design.Colors.foreground)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("settings.wakePhrase.\(preset.rawValue)")
+                        }
+
+                        if settingsStore.settings.wakePhrasePreset == .custom {
+                            TextField("Ex.: Bom dia Hermes", text: wakePhraseCustomTextBinding)
+                                .textInputAutocapitalization(.words)
+                                .autocorrectionDisabled()
+                                .font(Design.Typography.callout)
+                                .padding(.vertical, Design.Spacing.xs)
+                                .accessibilityIdentifier("settings.wakePhraseCustom")
+                        }
+                    }
+                }
+
                 Text(wakeWordDescription)
                     .font(Design.Typography.caption)
                     .foregroundStyle(Design.Colors.secondaryForeground)
@@ -319,8 +364,9 @@ struct SettingsScreen: View {
     }
 
     private var wakeWordDescription: String {
+        let phrase = activeWakePhraseText
         guard settingsStore.settings.wakeWordEnabled else {
-            return "Turn on to use the wake word. Say \u{201C}oi hermes\u{201D} to open the GPT Live voice session hands-free, or \u{201C}oi hermes, <question>\u{201D} to send the question straight to Hermes. Keeps the microphone active in the background while the app is running."
+            return "Turn on to use the wake word. Say \u{201C}\(phrase)\u{201D} to open the GPT Live voice session hands-free, or \u{201C}\(phrase), <question>\u{201D} to send the question straight to Hermes. Keeps the microphone active in the background while the app is running."
         }
         let wakeWordService = AppContainer.sharedDefault().wakeWordService
         if let error = wakeWordService.lastError, wakeWordService.phase == .off {
@@ -331,16 +377,27 @@ struct SettingsScreen: View {
         }
         switch wakeWordService.phase {
         case .off:
-            return "Starting the listener…"
+            return "Starting the listener\u{2026}"
         case .listening:
-            return "Listening for the wake word."
+            return "Listening for \u{201C}\(phrase)\u{201D}."
         case .capturing:
-            return "Recording your command…"
+            return "Recording your command\u{2026}"
         case .thinking:
-            return "Waiting for Hermes…"
+            return "Waiting for Hermes\u{2026}"
         case .speaking:
-            return "Speaking the reply…"
+            return "Speaking the reply\u{2026}"
         }
+    }
+
+    /// Phrase shown in the help/footer text: the preset phrase, or the custom
+    /// text when the user picked "Personalizada" (falling back to the default).
+    private var activeWakePhraseText: String {
+        let settings = settingsStore.settings
+        if settings.wakePhrasePreset == .custom {
+            let trimmed = settings.wakePhraseCustomText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "..." : trimmed
+        }
+        return settings.wakePhrasePreset.canonicalPhrase ?? "Oi Hermes"
     }
 
     // MARK: - Location
@@ -488,6 +545,13 @@ struct SettingsScreen: View {
                     await container.wakeWordService.setEnabled(newValue)
                 }
             }
+        )
+    }
+
+    private var wakePhraseCustomTextBinding: Binding<String> {
+        Binding(
+            get: { settingsStore.settings.wakePhraseCustomText },
+            set: { settingsStore.settings.wakePhraseCustomText = $0 }
         )
     }
 
