@@ -12,11 +12,18 @@ final class SettingsStore {
             if oldValue.relayConfiguration != settings.relayConfiguration {
                 Task { await onRelayConfigurationChanged?(settings.relayConfiguration) }
             }
+            if oldValue.wakePhrasePreset != settings.wakePhrasePreset
+                || oldValue.wakePhraseCustomText != settings.wakePhraseCustomText {
+                Task { await onWakePhraseChanged?(settings) }
+            }
         }
     }
 
     var onEnvironmentChanged: (@MainActor (AppEnvironment) async -> Void)?
     var onRelayConfigurationChanged: (@MainActor (RelayConfiguration) async -> Void)?
+    /// Called when the activation phrase changes, so the wake listener picks it
+    /// up live without toggling Hands-Free off/on.
+    var onWakePhraseChanged: (@MainActor (UserSettings) async -> Void)?
     var availableEnvironments: [AppEnvironment] {
         environmentPolicy.availableEnvironments
     }

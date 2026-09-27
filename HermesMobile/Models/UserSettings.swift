@@ -235,6 +235,10 @@ struct UserSettings: Codable, Hashable, Sendable {
     var locationSyncPreference: LocationSyncPreference
     /// Hands-free "hey hermes" wake word listener (opt-in; needs mic in background).
     var wakeWordEnabled: Bool
+    /// Which activation phrase the wake listener accepts. Defaults to "Oi Hermes".
+    var wakePhrasePreset: WakePhrasePreset
+    /// User-supplied phrase used when `wakePhrasePreset == .custom`.
+    var wakePhraseCustomText: String
     var chatModelChoice: ChatModelChoice
     /// Realtime voice transport ("Motor de voz") requested when starting talk mode.
     var voiceEngineChoice: VoiceEngineChoice
@@ -249,6 +253,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         autoConnectOnLaunch: Bool = true,
         locationSyncPreference: LocationSyncPreference = .foregroundOnly,
         wakeWordEnabled: Bool = false,
+        wakePhrasePreset: WakePhrasePreset = .oiHermes,
+        wakePhraseCustomText: String = "",
         chatModelChoice: ChatModelChoice = .hermesDefault,
         voiceEngineChoice: VoiceEngineChoice = .auto
     ) {
@@ -261,6 +267,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         self.autoConnectOnLaunch = autoConnectOnLaunch
         self.locationSyncPreference = locationSyncPreference
         self.wakeWordEnabled = wakeWordEnabled
+        self.wakePhrasePreset = wakePhrasePreset
+        self.wakePhraseCustomText = wakePhraseCustomText
         self.chatModelChoice = chatModelChoice
         self.voiceEngineChoice = voiceEngineChoice
     }
@@ -275,6 +283,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         case autoConnectOnLaunch
         case locationSyncPreference
         case wakeWordEnabled
+        case wakePhrasePreset
+        case wakePhraseCustomText
         case chatModelChoice
         case voiceEngineChoice
     }
@@ -291,6 +301,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         autoConnectOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .autoConnectOnLaunch) ?? true
         locationSyncPreference = try container.decodeIfPresent(LocationSyncPreference.self, forKey: .locationSyncPreference) ?? .foregroundOnly
         wakeWordEnabled = try container.decodeIfPresent(Bool.self, forKey: .wakeWordEnabled) ?? false
+        wakePhrasePreset = try container.decodeIfPresent(WakePhrasePreset.self, forKey: .wakePhrasePreset) ?? .oiHermes
+        wakePhraseCustomText = try container.decodeIfPresent(String.self, forKey: .wakePhraseCustomText) ?? ""
         chatModelChoice = try container.decodeIfPresent(ChatModelChoice.self, forKey: .chatModelChoice) ?? .hermesDefault
         voiceEngineChoice = try container.decodeIfPresent(VoiceEngineChoice.self, forKey: .voiceEngineChoice) ?? .auto
     }
@@ -306,6 +318,8 @@ struct UserSettings: Codable, Hashable, Sendable {
         try container.encode(autoConnectOnLaunch, forKey: .autoConnectOnLaunch)
         try container.encode(locationSyncPreference, forKey: .locationSyncPreference)
         try container.encode(wakeWordEnabled, forKey: .wakeWordEnabled)
+        try container.encode(wakePhrasePreset, forKey: .wakePhrasePreset)
+        try container.encode(wakePhraseCustomText, forKey: .wakePhraseCustomText)
         try container.encode(chatModelChoice, forKey: .chatModelChoice)
         try container.encode(voiceEngineChoice, forKey: .voiceEngineChoice)
     }

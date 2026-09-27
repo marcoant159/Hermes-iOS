@@ -129,7 +129,10 @@
 		C7452B1D2AA98D2A5E02056F /* MockMediaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70A40E5EA51E036A1BD1C3AE /* MockMediaService.swift */; };
 		C877C77B3DB9D162B70F6E80 /* Conversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6063F0C3EB257DC070FFBAC3 /* Conversation.swift */; };
 		C99F0FEC8F2FF6C7AFAA8A94 /* UserSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33AA48ED37DFFBB2A6757A41 /* UserSettings.swift */; };
+		B7E4A1C9D2F3478B90A1E5C3 /* WakePhrase.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6D3F8B1C4E2597A0B8D2F41 /* WakePhrase.swift */; };
+		4F8E2B6A1C9D0357E62A4B70 /* WakePhraseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6C9E7F4A1B8305C759E2D4 /* WakePhraseTests.swift */; };
 		C9A79DA143EE532669AA4961 /* LiveMotionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9866832C1360E12474ACA37 /* LiveMotionService.swift */; };
+
 		CA30016E1E14245DE4E23BBE /* MockSyncCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9386D66627C83DCF370CDC9 /* MockSyncCoordinator.swift */; };
 		CA98C949007B9A4AD6218795 /* ThinkingIndicatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5828186454A1762F98821070 /* ThinkingIndicatorView.swift */; };
 		CD1A4152969628A536D82F08 /* PendingAttachment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1039BF472349974021D833D4 /* PendingAttachment.swift */; };
@@ -231,6 +234,8 @@
 		31A754F555998852844790A8 /* ConnectionStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionStatus.swift; sourceTree = "<group>"; };
 		324210CDA9855FA02403D143 /* AppTemplateUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTemplateUITests.swift; sourceTree = "<group>"; };
 		3378BC22D9BB239E8E908A2D /* SensorUploadService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensorUploadService.swift; sourceTree = "<group>"; };
+		A6D3F8B1C4E2597A0B8D2F41 /* WakePhrase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakePhrase.swift; sourceTree = "<group>"; };
+		2D6C9E7F4A1B8305C759E2D4 /* WakePhraseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakePhraseTests.swift; sourceTree = "<group>"; };
 		33AA48ED37DFFBB2A6757A41 /* UserSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserSettings.swift; sourceTree = "<group>"; };
 		354134DC5125C4CA0FEC05A6 /* MockVoiceSessionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockVoiceSessionService.swift; sourceTree = "<group>"; };
 		36500DDDD7B917A3A3C1A3FC /* InboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxStore.swift; sourceTree = "<group>"; };
@@ -682,6 +687,7 @@
 			children = (
 				48A1D2D381EA3919E2D8302A /* AppStoresTests.swift */,
 				913ED4F6E33142A78F4B8FAA /* AppTemplateTests.swift */,
+				2D6C9E7F4A1B8305C759E2D4 /* WakePhraseTests.swift */,
 			);
 			path = HermesMobileTests;
 			sourceTree = "<group>";
@@ -740,6 +746,7 @@
 				5042915D47BD430A384EF31A /* TokenUsage.swift */,
 				D434755EB1B165DD0C31EDEF /* ToolActivity.swift */,
 				33AA48ED37DFFBB2A6757A41 /* UserSettings.swift */,
+				A6D3F8B1C4E2597A0B8D2F41 /* WakePhrase.swift */,
 				25563E39F08D0F19F538ADD8 /* VoiceState.swift */,
 			);
 			path = Models;
@@ -913,6 +920,7 @@
 			files = (
 				1C28312C8A9819F31BBB3386 /* AppStoresTests.swift in Sources */,
 				85AD98E44891203305628F5C /* AppTemplateTests.swift in Sources */,
+				4F8E2B6A1C9D0357E62A4B70 /* WakePhraseTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1050,6 +1058,7 @@
 				684B5824B5B20A8B4B2B61A4 /* TypingDotsView.swift in Sources */,
 				50E1D7DDEAA35139DA020BFB /* UserDefaultsAppPersistenceStore.swift in Sources */,
 				C99F0FEC8F2FF6C7AFAA8A94 /* UserSettings.swift in Sources */,
+				B7E4A1C9D2F3478B90A1E5C3 /* WakePhrase.swift in Sources */,
 				66F661BD80D0B6748FE1F0FB /* View+Glass.swift in Sources */,
 				B69560553DACF718E04C2C8F /* VoiceAttachmentSheet.swift in Sources */,
 				FE7522860C6E4CDA2A7AEB11 /* VoiceOrb.swift in Sources */,

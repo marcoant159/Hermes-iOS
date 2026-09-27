@@ -83,11 +83,11 @@ final class LiveWakeWordService {
     /// Short system sound played to confirm the wake phrase.
     private static let activationSoundID: SystemSoundID = 1113
 
-    /// The only wake phrase is "oi hermes" (plus the common on-device
-    /// transcription variant "oi ermes"). Case/accent/punctuation insensitive.
-    nonisolated private static let wakeWord = "hermes"
-    nonisolated private static let wakeWordVariant = "ermes"
-    nonisolated private static let wakeGreeting = "oi"
+    /// The default wake phrase is "oi hermes". The accepted phrase (and its
+    /// transcription variants) is configurable in Settings → Hands-Free and
+    /// pushed via ``apply(settings:)``; it defaults to the built-in phrase so the
+    /// listener works before any settings are applied.
+    private var wakePhrase = WakePhrase.defaultPhrase
 
     // MARK: - Observable state
 
@@ -96,6 +96,9 @@ final class LiveWakeWordService {
     private(set) var lastError: String?
 
     var isEnabled: Bool { phase != .off }
+
+    /// The activation phrase currently being listened for (for the Settings UI).
+    var currentPhraseText: String { wakePhrase.displayText }
 
     /// `true` while listening is paused so another capture path (Talk mode,
     /// chat dictation) can own the microphone. `phase` reads `.off` in this
@@ -169,6 +172,19 @@ final class LiveWakeWordService {
         }
     }
 
+    /// Pushes the user's chosen activation phrase. Safe to call while listening:
+    /// only the matcher input changes, the audio stack is untouched. Does nothing
+    /// when the phrase is unchanged, so it can be called on every settings write.
+    func apply(settings: UserSettings) {
+        let phrase = WakePhrase(
+            preset: settings.wakePhrasePreset,
+            customText: settings.wakePhraseCustomText
+        )
+        guard phrase != wakePhrase else { return }
+        wakePhrase = phrase
+        emitWakeEvent("wake phrase set to \(phrase.displayText)")
+    }
+
     func start() async {
         // Already armed: recover instead of bailing out. This is the path taken
         // when the listener was suspended for an external capture and the app
@@ -194,6 +210,10 @@ final class LiveWakeWordService {
             emitWakeEvent("listener permission denied: \(error.localizedDescription)")
             return
         }
+
+        // The listener is enabled from the settings toggle; make sure the phrase
+        // reflects the user's current choice before arming.
+        apply(settings: AppContainer.sharedDefault().settingsStore.settings)
 
         do {
             let stream = try await listener.start()
@@ -348,7 +368,7 @@ final class LiveWakeWordService {
         guard Date() >= suppressUntil else { return }
 
         if !capturing {
-            guard let remainder = Self.commandAfterTrigger(in: trimmed) else { return }
+            guard let remainder = wakePhrase.match(in: trimmed)?.remainder else { return }
             capturing = true
             triggerSegment = segment
             committedCommand = ""
@@ -363,7 +383,10 @@ final class LiveWakeWordService {
         }
 
         if segment == triggerSegment {
-            currentSegmentText = Self.commandAfterTrigger(in: trimmed) ?? ""
+            // Partial (volatile) re-transcriptions of the trigger segment keep
+            // rewriting the whole utterance; re-extract the command each time so
+            // no spoken words are lost between partials.
+            currentSegmentText = wakePhrase.match(in: trimmed)?.remainder ?? ""
         } else {
             currentSegmentText = trimmed
         }
@@ -464,57 +487,13 @@ final class LiveWakeWordService {
 
     // MARK: - Trigger matching
 
-    /// Returns the command text that follows the wake phrase, or `nil` when the
-    /// transcript is not addressed to the wake word.
+    /// Returns the command text that follows the configured wake phrase, or `nil`
+    /// when the transcript is not addressed to the wake word.
     ///
-    /// The only accepted phrase is "oi hermes" (case/accent/punctuation
-    /// insensitive), plus the common on-device transcription variant
-    /// "oi ermes". A bare "hermes" or a mention inside a sentence never triggers.
-    nonisolated static func commandAfterTrigger(in text: String) -> String? {
-        let tokens = words(in: text)
-        for index in tokens.indices {
-            guard tokens[index].folded == wakeGreeting else { continue }
-            let nextIndex = tokens.index(after: index)
-            guard nextIndex < tokens.endIndex else { continue }
-            let word = tokens[nextIndex]
-            guard word.folded == wakeWord || word.folded == wakeWordVariant else { continue }
-            return trimLeadingPunctuation(String(text[word.range.upperBound...]))
-        }
-        return nil
-    }
-
-    /// Splits `text` into alphanumeric runs, folding each to lower-case without
-    /// diacritics so punctuation, accents, and case are ignored.
-    private nonisolated static func words(
-        in text: String
-    ) -> [(folded: String, range: Range<String.Index>)] {
-        var tokens: [(folded: String, range: Range<String.Index>)] = []
-        var index = text.startIndex
-        while index < text.endIndex {
-            while index < text.endIndex, !text[index].isLetter, !text[index].isNumber {
-                index = text.index(after: index)
-            }
-            guard index < text.endIndex else { break }
-            let start = index
-            while index < text.endIndex, text[index].isLetter || text[index].isNumber {
-                index = text.index(after: index)
-            }
-            let range = start..<index
-            tokens.append((folded: fold(String(text[range])), range: range))
-        }
-        return tokens
-    }
-
-    private nonisolated static func fold(_ word: String) -> String {
-        word.lowercased().folding(options: .diacriticInsensitive, locale: .current)
-    }
-
-    private nonisolated static func trimLeadingPunctuation(_ text: String) -> String {
-        var slice = Substring(text)
-        while let first = slice.first, !first.isLetter, !first.isNumber {
-            slice = slice.dropFirst()
-        }
-        return String(slice).trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Matching (normalization, transcription variants and the small edit-distance
+    /// tolerance) lives in ``WakePhrase`` so it can be unit-tested in isolation.
+    func commandAfterTrigger(in text: String) -> String? {
+        wakePhrase.match(in: text)?.remainder
     }
 
     private nonisolated static func join(_ lhs: String, _ rhs: String) -> String {
@@ -561,13 +540,16 @@ private actor WakeListener {
     private var analyzerTask: Task<Void, Never>?
     private var resultsTask: Task<Void, Never>?
     private var restartTask: Task<Void, Never>?
+    private var segmentTeardownTask: Task<Void, Never>?
     private var outputContinuation: AsyncStream<Event>.Continuation?
     private var isSegmentRunning = false
+    private var isSegmentTearingDown = false
     private var segmentStartedAt = Date.distantPast
     private var isStopped = true
     private var isPaused = false
     private var segmentCounter = 0
     private var tapInstalled = false
+    private var sessionConfigured = false
 
     func start() async throws -> AsyncStream<Event> {
         stop()
@@ -607,18 +589,15 @@ private actor WakeListener {
         ) ?? inputFormat
         analyzerFormat = resolvedAnalyzerFormat
 
-        let formatsMatch =
-            inputFormat.sampleRate == resolvedAnalyzerFormat.sampleRate &&
-            inputFormat.channelCount == resolvedAnalyzerFormat.channelCount &&
-            inputFormat.commonFormat == resolvedAnalyzerFormat.commonFormat &&
-            inputFormat.isInterleaved == resolvedAnalyzerFormat.isInterleaved
-        let converter = formatsMatch ? nil : AVAudioConverter(from: inputFormat, to: resolvedAnalyzerFormat)
-        converter?.primeMethod = .none
-        audioConverter = converter
+        updateConverter(for: inputFormat)
 
+        // Capture the converter in the tap closure so restarts reuse the exact
+        // same instance (replacing `audioConverter` alone would leave the tap
+        // converting with a stale converter).
+        let captureConverter = audioConverter
         let box = inputBox
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { buffer, _ in
-            guard let converted = Self.convertBuffer(buffer, using: converter, outputFormat: resolvedAnalyzerFormat) else {
+            guard let converted = Self.convertBuffer(buffer, using: captureConverter, outputFormat: resolvedAnalyzerFormat) else {
                 return
             }
             box.continuation?.yield(AnalyzerInput(buffer: converted))
@@ -639,7 +618,7 @@ private actor WakeListener {
         isPaused = true
         await endSegment()
         audioEngine.stop()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        deactivateSession()
     }
 
     /// Re-arms capture after `pause()`.
@@ -657,8 +636,11 @@ private actor WakeListener {
     }
 
     /// Re-arms the analyzer if the segment died (app resumed, audio interruption…).
+    /// A no-op while a previous segment is still tearing down: otherwise two
+    /// `SpeechAnalyzer`/`DictationTranscriber` pairs would coexist and the speech
+    /// framework reports "Maximum number of recognizers reached".
     func restartIfNeeded() async {
-        guard !isStopped, !isPaused, !isSegmentRunning else { return }
+        guard !isStopped, !isPaused, !isSegmentRunning, !isSegmentTearingDown else { return }
         do {
             if !audioEngine.isRunning {
                 try activateSession()
@@ -682,12 +664,20 @@ private actor WakeListener {
             return
         }
         if audioEngine.isRunning, isSegmentRunning { return }
+        // Let any in-flight teardown finish before creating a new analyzer, so we
+        // never hold two transcribers at once.
+        while isSegmentTearingDown {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
         await forceRestart()
     }
 
     /// Tears the current segment down and brings the engine + analyzer back up.
     func forceRestart() async {
         guard !isStopped, !isPaused else { return }
+        while isSegmentTearingDown {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
         restartTask?.cancel()
         restartTask = nil
         await endSegment()
@@ -711,6 +701,8 @@ private actor WakeListener {
         isSegmentRunning = false
         restartTask?.cancel()
         restartTask = nil
+        segmentTeardownTask?.cancel()
+        segmentTeardownTask = nil
         analyzerTask?.cancel()
         analyzerTask = nil
         resultsTask?.cancel()
@@ -722,10 +714,15 @@ private actor WakeListener {
         self.analyzer = nil
         self.transcriber = nil
         if let analyzer {
+            // Await the teardown instead of detaching it in an unstructured Task:
+            // a short-lived listener stop+start (settings toggle) used to race the
+            // previous analyzer's `cancelAndFinishNow` and leak recognizers.
             Task {
                 await analyzer.cancelAndFinishNow()
             }
         }
+        // Do not let a stale teardown from the old segment block the next start.
+        isSegmentTearingDown = false
 
         audioEngine.stop()
         if tapInstalled {
@@ -740,7 +737,7 @@ private actor WakeListener {
             }
         }
 
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        deactivateSession()
 
         outputContinuation?.finish()
         outputContinuation = nil
@@ -750,6 +747,12 @@ private actor WakeListener {
 
     private func startSegment() async throws {
         guard !isStopped, !isPaused else { return }
+        guard audioEngine.isRunning else {
+            // Starting an analyzer without a live engine leaves a transcriber
+            // alive until the next attempt, which is one of the ways the speech
+            // framework hits "Maximum number of recognizers reached".
+            throw WakeWordError.speechUnavailable
+        }
         let preferredLocale = Locale(
             identifier: Locale.preferredLanguages.first ?? Locale.current.identifier
         )
@@ -764,6 +767,15 @@ private actor WakeListener {
         let segment = segmentCounter
         isSegmentRunning = true
         segmentStartedAt = Date()
+
+        // The input node format can change after an interruption/route change
+        // (e.g. switching microphones), which used to leave the tap feeding a
+        // converter for the wrong format and produce AVFAudio errors.
+        let inputFormat = audioEngine.inputNode.outputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0, inputNodeIsUsable(inputFormat) else {
+            throw WakeWordError.speechUnavailable
+        }
+        updateConverter(for: inputFormat)
 
         let transcriber = DictationTranscriber(locale: locale, preset: .progressiveShortDictation)
         self.transcriber = transcriber
@@ -803,6 +815,15 @@ private actor WakeListener {
     }
 
     private func endSegment() async {
+        // Serialize teardowns: two overlapping `cancelAndFinishNow` calls on the
+        // same analyzer family are what produced the AVFAudio -10868 /
+        // "Maximum number of recognizers reached" storms while re-arming.
+        while isSegmentTearingDown {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        isSegmentTearingDown = true
+        defer { isSegmentTearingDown = false }
+
         isSegmentRunning = false
         analyzerTask?.cancel()
         analyzerTask = nil
@@ -837,20 +858,60 @@ private actor WakeListener {
 
     private func activateSession() throws {
         let session = AVAudioSession.sharedInstance()
+        let options: AVAudioSession.CategoryOptions = [.duckOthers, .defaultToSpeaker]
         // `.playAndRecord` (instead of `.record`) keeps the session eligible to
         // record while the app is in the background and lets the wake
         // confirmation beep play. `.defaultToSpeaker` avoids routing it to the
         // earpiece when no headset is connected.
-        try session.setCategory(
-            .playAndRecord,
-            mode: .measurement,
-            options: [.duckOthers, .defaultToSpeaker]
-        )
+        //
+        // Reconfiguring the category on every re-arm while the session is already
+        // active is what triggered the AVFAudio OSStatus 560557684 /
+        // 2003329396 errors on segment restarts: only set it when the current
+        // configuration differs.
+        if !sessionConfigured || session.category != .playAndRecord || session.mode != .measurement {
+            try session.setCategory(.playAndRecord, mode: .measurement, options: options)
+            sessionConfigured = true
+        }
         try session.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+
+    /// Releases the shared audio session. Keeps `sessionConfigured` set so the
+    /// next `activateSession()` does not re-apply the (unchanged) category.
+    private func deactivateSession() {
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     private func emit(_ event: Event) {
         outputContinuation?.yield(event)
+    }
+
+    /// Builds the input→analyzer converter for `inputFormat`, or clears it when
+    /// the formats already match. Rebuilt on every (re)start so a route change
+    /// (different microphone) cannot keep a converter bound to a dead format.
+    private func updateConverter(for inputFormat: AVAudioFormat) {
+        guard let analyzerFormat,
+              inputFormat.sampleRate > 0,
+              analyzerFormat.sampleRate > 0 else {
+            audioConverter = nil
+            return
+        }
+        let formatsMatch =
+            inputFormat.sampleRate == analyzerFormat.sampleRate &&
+            inputFormat.channelCount == analyzerFormat.channelCount &&
+            inputFormat.commonFormat == analyzerFormat.commonFormat &&
+            inputFormat.isInterleaved == analyzerFormat.isInterleaved
+        if formatsMatch {
+            audioConverter = nil
+        } else {
+            let converter = AVAudioConverter(from: inputFormat, to: analyzerFormat)
+            converter?.primeMethod = .none
+            audioConverter = converter
+        }
+    }
+
+    /// Guards against an input node whose format collapsed after a route change.
+    private func inputNodeIsUsable(_ format: AVAudioFormat) -> Bool {
+        format.sampleRate >= 8000
     }
 
     nonisolated private static func convertBuffer(
