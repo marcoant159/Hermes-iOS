@@ -613,6 +613,122 @@ def test_messages_payload_skips_empty_history_entries():
     assert messages[1] == {"role": "user", "content": "Final"}
 
 
+def test_messages_payload_omits_history_when_session_id_present():
+    """With a Hermes session id the server replays its own history, so the
+    executor must send only the new user turn."""
+    from hermes_mobile_connector.hermes_api_executor import HermesAPIExecutor
+    from hermes_mobile_connector.hermes_runner import HermesConversationMessage
+
+    executor = HermesAPIExecutor()
+    history = [
+        HermesConversationMessage(role="user", text="Hello"),
+        HermesConversationMessage(role="hermes", text="Hi there"),
+        HermesConversationMessage(role="user", text="How are you?"),
+    ]
+
+    messages = executor._messages_payload(  # noqa: SLF001
+        latest_user_message="What's up?",
+        history=history,
+        session_id="api-abc123",
+    )
+
+    assert messages == [{"role": "user", "content": "What's up?"}]
+
+
+def test_messages_payload_limits_history_tail_without_session():
+    """Without a session id the API path must bound the replayed history to
+    ``history_limit`` (the CLI path already does this in hermes_runner)."""
+    from hermes_mobile_connector.hermes_api_executor import HermesAPIExecutor
+    from hermes_mobile_connector.hermes_runner import HermesConversationMessage
+
+    executor = HermesAPIExecutor(history_limit=2)
+    history = [
+        HermesConversationMessage(role="user", text="one"),
+        HermesConversationMessage(role="hermes", text="two"),
+        HermesConversationMessage(role="user", text="three"),
+        HermesConversationMessage(role="hermes", text="four"),
+    ]
+
+    messages = executor._messages_payload(  # noqa: SLF001
+        latest_user_message="five",
+        history=history,
+    )
+
+    assert messages == [
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "four"},
+        {"role": "user", "content": "five"},
+    ]
+
+
+def test_build_payload_forwards_session_id_to_messages():
+    """The streaming/non-streaming payloads must carry the session id all the
+    way into the messages array (and drop the replayed history)."""
+    from hermes_mobile_connector.hermes_api_executor import HermesAPIExecutor
+    from hermes_mobile_connector.hermes_runner import HermesConversationMessage
+
+    executor = HermesAPIExecutor(history_limit=50)
+
+    payload = executor._build_payload(  # noqa: SLF001
+        stream=True,
+        latest_user_message="new turn",
+        history=[HermesConversationMessage(role="user", text="old turn")],
+        attachments=None,
+        session_id="api-keep",
+    )
+
+    assert payload["stream"] is True
+    assert payload["messages"] == [{"role": "user", "content": "new turn"}]
+
+
+
+# --------------------------------------------------------------------------
+# HermesAPIExecutor HTTP session header round-trip
+# --------------------------------------------------------------------------
+
+
+def test_executor_sends_session_header_and_reads_returned_session_id(monkeypatch):
+    """The executor must send the incoming session id as X-Hermes-Session-Id,
+    drop the replayed history in that case, and surface the id echoed by the
+    API server so the connector can persist it."""
+    from hermes_mobile_connector.hermes_api_executor import HermesAPIExecutor
+    from hermes_mobile_connector.hermes_runner import HermesConversationMessage
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["session_header"] = request.headers.get("X-Hermes-Session-Id")
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            headers={"X-Hermes-Session-Id": "api-new-session"},
+            json={"choices": [{"message": {"role": "assistant", "content": "hi"}}]},
+        )
+
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args, **kwargs):  # noqa: ANN001
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "hermes_mobile_connector.hermes_api_executor.httpx.AsyncClient", fake_client
+    )
+
+    executor = HermesAPIExecutor(history_limit=20)
+    result = asyncio.run(
+        executor.send_message(
+            latest_user_message="new turn",
+            history=[HermesConversationMessage(role="user", text="old turn")],
+            session_id="api-old-session",
+        )
+    )
+
+    assert captured["session_header"] == "api-old-session"
+    assert captured["body"]["messages"] == [{"role": "user", "content": "new turn"}]
+    assert result.session_id == "api-new-session"
+
+
 # --------------------------------------------------------------------------
 # Git diff integration in _handle_job_streaming
 # --------------------------------------------------------------------------
