@@ -28,3 +28,57 @@ Branch: `wip/ui-ptbr`. Objetivo: localização pt-BR via String Catalog + polime
   (`HapticEngine.voiceSessionStarted`, ligado a Ajustes); timestamp da lista de conversas
   em `.relative`; animação suave de aparecimento de mensagens; prioridade/status da Inbox
   com `displayLabel` traduzível.
+- [x] Localizadas também as interpoladas visíveis: `"%@ prompt tokens remaining"` (popover
+  da janela de contexto) e `"%lld new"` (badge de não lidos da Inbox, com variação plural).
+
+## Como foi validado
+
+- **Build unsigned IPA** — run `36285264906`, branch `wip/ui-ptbr`, success (2m29s).
+- **Simulator screenshots (light, en)** — run `36285778287`, success; `Executed 1 test,
+  with 0 failures`; 13 PNGs gerados (`01-onboarding` … `13-voice-mode`), cada passo achou o
+  elemento em inglês (tour continua verde, `accessibilityIdentifier` intacto).
+  - A 1ª tentativa após o 2º commit (`36285395005`) reproduziu a **flakiness pré-existente**
+    de pareamento já documentada em `REPORT-tour-more.md`: o app ficou na tela de pareamento e
+    só gerou `01`–`03`. Reexecução passou limpa (mesmo sintoma e desfecho do relatório citado).
+- **Catálogo compilado** — o IPA do run `36285264906` contém
+  `Payload/HermesMobile.app/pt-BR.lproj/Localizable.strings` (220 chaves pt-BR) e
+  `Localizable.stringsdict` (plurais `%lld new` e `Used %lld tools`). Confirma que o
+  `.xcstrings` foi embutido como recurso do target e que as traduções pt-BR foram geradas.
+- A localização em pt-BR **não** foi exercitada no Simulator porque o workflow
+  `Simulator screenshots` não aceita locale e não editei o workflow. Roteiro manual abaixo.
+
+## Strings que ficaram sem tradução (por design ou fora de escopo)
+
+- Marcas/nomes: `Hermes`, `Hermes iOS`, avatar `H`, nomes de modelos e de comandos.
+- Exemplos/placeholders: `ABCD-EFGH`, `https://your-relay.example.com/v1`.
+- Dados dinâmicos do host: conteúdo de mensagens, rótulos de ferramentas, nome do host,
+  `lastErrorMessage`, `statusMessage`, `blockedReason`, `statusDetail` do relay.
+- Mensagens de sistema de slash-commands em `ChatScreen.appendSystemMessage`
+  (`"Conversation saved to Documents folder."`, `"Retrying: \"…\""`, `"Undid N message(s)…"`,
+  `"── Conversation History ──"`, etc.) — power-user, com plural/interpolação.
+- `accessibilityLabel` com interpolação: `"Connection status: …"`, `"Voice status: …"`,
+  `"Tools: …"`, `"Hermes: …"`, `"Dismiss …"`, `"\(action) \(title)"`, e
+  `message.status.rawValue`.
+- CarPlay (`CarPlayVoiceManager.titleVariants`) e os fallbacks de status da Live Activity em
+  `TalkStore` (Live Activity é de outro agente). Já havia trechos em pt (`"Pensando..."`,
+  `"Consultando o Hermes"`).
+- `LiveActivityPreviews.swift` (somente `#Preview`).
+- Widget/Live Activity: **não** mexi (outro agente); o target do widget não tem
+  `PBXResourcesBuildPhase`, então adicionar um catálogo exigiria criar a fase de recursos.
+
+## Roteiro curto de teste no iPhone (Marco, pt-BR)
+
+1. Ajustes do iPhone → Geral → Idioma e Região → deixar **Português (Brasil)**.
+2. Abrir o app (pareado). Conferir que a barra de conversa mostra **“Responder ao Hermes”**,
+   o botão de anexo tem alvo confortável (44 pt) e o botão de microfone/voz responde.
+3. Enviar uma mensagem: o indicador “pensando” aparece imediatamente; ao responder, há
+   vibração leve (se Ajustes → Retorno tátil ligado).
+4. Tocar no ícone de engrenagem → conferir **Ajustes** em pt-BR (Conexão, Relay, Motor de
+   voz, Mãos livres, Localização, Privacidade, Sobre).
+5. Tocar no chip do modelo (canto superior esquerdo) → popover **“Modelo para novas
+   mensagens”**, **“Janela de contexto”**, **“… tokens de prompt restantes”**.
+6. Botão de voz (waveform) → overlay de voz com “Voz”, “Ouvindo”, “Encerrar sessão de voz”.
+7. Botão de lista (canto superior direito) → **“Conversas”**, com **“Nova”** e
+   **“Concluir”**; horários relativos.
+8. Inbox → **“Caixa de entrada”**, estado vazio **“Tudo em dia”**, prioridades
+   (Alta/Urgente) e status (Aberto/Concluído).
