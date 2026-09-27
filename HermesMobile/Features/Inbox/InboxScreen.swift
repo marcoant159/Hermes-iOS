@@ -63,7 +63,7 @@ struct InboxScreen: View {
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             if inboxStore.unreadCount > 0 {
-                Text("\(inboxStore.unreadCount) new")
+                Text(String(localized: "\(inboxStore.unreadCount) new"))
                     .font(Design.Typography.caption)
                     .foregroundStyle(Design.Colors.secondaryForeground)
             }

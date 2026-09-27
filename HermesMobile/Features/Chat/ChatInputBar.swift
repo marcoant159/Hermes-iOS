@@ -14,6 +14,7 @@ struct ChatInputBar: View {
     @Environment(TalkStore.self) private var talkStore
     @Environment(ChatStore.self) private var chatStore
     @Environment(TabRouter.self) private var router
+    @Environment(SettingsStore.self) private var settingsStore
 
     @State private var speechService = LiveSpeechService()
     @State private var dictationBaseText = ""
@@ -27,6 +28,14 @@ struct ChatInputBar: View {
 
     private var isSlashMode: Bool {
         text.hasPrefix("/")
+    }
+
+    private var composerPlaceholder: LocalizedStringKey {
+        speechService.isListening ? "Listening..." : "Reply to Hermes"
+    }
+
+    private var dictationAccessibilityLabel: LocalizedStringKey {
+        speechService.isListening ? "Stop dictation" : "Start dictation"
     }
 
     /// Parses the command and any trailing argument from the text field.
@@ -88,7 +97,7 @@ struct ChatInputBar: View {
 
                 // Text input area
                 TextField(
-                    speechService.isListening ? "Listening..." : "Reply to Hermes",
+                    composerPlaceholder,
                     text: $text,
                     axis: .vertical
                 )
@@ -115,7 +124,7 @@ struct ChatInputBar: View {
                         Image(systemName: "plus")
                             .font(.system(size: Design.Size.iconMedium, weight: .medium))
                             .foregroundStyle(Design.Colors.secondaryForeground)
-                            .frame(width: 36, height: 36)
+                            .frame(width: 44, height: 44)
                             .background(Design.Colors.surface)
                             .clipShape(Circle())
                     }
@@ -131,22 +140,25 @@ struct ChatInputBar: View {
                             Image(systemName: speechService.isListening ? "stop.fill" : "mic")
                                 .font(.system(size: Design.Size.iconMedium, weight: .medium))
                                 .foregroundStyle(speechService.isListening ? .red : Design.Colors.secondaryForeground)
-                                .frame(width: 36, height: 36)
+                                .frame(width: 44, height: 44)
                                 .background(speechService.isListening ? Design.Colors.surface : .clear)
                                 .clipShape(Circle())
                         }
-                        .accessibilityLabel(speechService.isListening ? "Stop dictation" : "Start dictation")
+                        .accessibilityLabel(dictationAccessibilityLabel)
                     }
 
                     // Talk mode button (right side, before send)
                     if !isStreaming && !speechService.isListening && !canSend {
                         Button {
+                            if settingsStore.settings.hapticFeedbackEnabled {
+                                HapticEngine.voiceSessionStarted()
+                            }
                             router.isVoiceOverlayPresented = true
                         } label: {
                             Image(systemName: "waveform")
                                 .font(.system(size: Design.Size.iconMedium, weight: .medium))
                                 .foregroundStyle(Design.Colors.foreground)
-                                .frame(width: 36, height: 36)
+                                .frame(width: 44, height: 44)
                                 .background(Design.Brand.accent)
                                 .clipShape(Circle())
                         }
@@ -254,7 +266,7 @@ struct ChatInputBar: View {
                 Image(systemName: "stop.fill")
                     .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(Design.Colors.foreground)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
                     .background(Design.Colors.surface)
                     .clipShape(Circle())
             }
@@ -264,7 +276,7 @@ struct ChatInputBar: View {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(Design.Colors.background)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
                     .background(Design.Brand.accent)
                     .clipShape(Circle())
             }

@@ -66,7 +66,7 @@ struct ToolActivityRail: View {
                         .font(.system(size: 10))
                         .foregroundStyle(Design.Colors.secondaryForeground)
 
-                    Text("Used \(activities.count) tool\(activities.count == 1 ? "" : "s")")
+                    Text(String(localized: "Used \(activities.count) tools"))
                         .font(Design.Typography.caption)
                         .foregroundStyle(Design.Colors.secondaryForeground)
 

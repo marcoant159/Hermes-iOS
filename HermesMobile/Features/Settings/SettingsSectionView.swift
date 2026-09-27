@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SettingsSectionView<Content: View>: View {
-    let title: String
+    let title: LocalizedStringKey
     @ViewBuilder let content: Content
 
     var body: some View {

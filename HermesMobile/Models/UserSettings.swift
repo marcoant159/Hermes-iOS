@@ -37,8 +37,8 @@ enum RelayMode: String, Codable, CaseIterable, Hashable, Sendable {
 
     var displayLabel: String {
         switch self {
-        case .custom: "Use My Relay"
-        case .hosted: "Use Hosted Relay"
+        case .custom: String(localized: "Use My Relay")
+        case .hosted: String(localized: "Use Hosted Relay")
         }
     }
 }
@@ -130,7 +130,7 @@ struct RelayConfiguration: Codable, Hashable, Sendable {
 
     var relayOriginLabel: String {
         guard let baseURLString = activeBaseURLString, let url = URL(string: baseURLString) else {
-            return "Not Configured"
+            return String(localized: "Not Configured")
         }
         return url.host ?? baseURLString
     }
@@ -139,13 +139,13 @@ struct RelayConfiguration: Codable, Hashable, Sendable {
         switch relayMode {
         case .custom:
             let trimmed = customRelayBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return "Enter your relay URL." }
+            guard !trimmed.isEmpty else { return String(localized: "Enter your relay URL.") }
             guard RelayConfiguration.normalizeBaseURL(trimmed) != nil else {
-                return "Relay URL must be an absolute http(s) URL ending with /v1."
+                return String(localized: "Relay URL must be an absolute http(s) URL ending with /v1.")
             }
             return nil
         case .hosted:
-            return canUseHosted ? nil : "Hosted relay is not configured in this app build."
+            return canUseHosted ? nil : String(localized: "Hosted relay is not configured in this app build.")
         }
     }
 
@@ -412,9 +412,9 @@ enum AppEnvironment: String, Codable, CaseIterable, Hashable, Sendable {
 
     var displayLabel: String {
         switch self {
-        case .production: "Production"
-        case .staging: "Staging"
-        case .development: "Development"
+        case .production: String(localized: "Production")
+        case .staging: String(localized: "Staging")
+        case .development: String(localized: "Development")
         }
     }
 

@@ -9,6 +9,10 @@ struct VoiceOverlayScreen: View {
 
     @State private var showLiveCameraOverlay = false
 
+    private var muteLabel: LocalizedStringKey {
+        talkStore.isMuted ? "Unmute" : "Mute"
+    }
+
     var body: some View {
         ZStack {
             Design.Colors.background
@@ -155,7 +159,7 @@ struct VoiceOverlayScreen: View {
         switch (talkStore.connectionState, talkStore.voiceState) {
         case (.failed, _), (.blocked, _):
             VStack(spacing: Design.Spacing.sm) {
-                Text(talkStore.blockedReason ?? "Unable to connect")
+                Text(talkStore.blockedReason ?? String(localized: "Unable to connect"))
                     .font(Design.Typography.callout)
                     .foregroundStyle(Design.Colors.secondaryForeground)
                     .multilineTextAlignment(.center)
@@ -238,7 +242,7 @@ struct VoiceOverlayScreen: View {
                         .background(Design.Colors.surface)
                         .clipShape(Circle())
                 }
-                .accessibilityLabel(talkStore.isMuted ? "Unmute" : "Mute")
+                .accessibilityLabel(muteLabel)
 
                 Spacer()
 

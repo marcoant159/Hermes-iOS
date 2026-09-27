@@ -189,9 +189,9 @@ struct SettingsScreen: View {
         case .online, .offline:
             return hostStore.currentHost?.resolvedDisplayName ?? "Hermes Host"
         case .unreachable:
-            return "Status unavailable"
+            return String(localized: "Status unavailable")
         case .notConnected:
-            return "Not Connected"
+            return String(localized: "Not Connected")
         }
     }
 
@@ -366,26 +366,26 @@ struct SettingsScreen: View {
     private var wakeWordDescription: String {
         let phrase = activeWakePhraseText
         guard settingsStore.settings.wakeWordEnabled else {
-            return "Turn on to use the wake word. Say \u{201C}\(phrase)\u{201D} to open the GPT Live voice session hands-free, or \u{201C}\(phrase), <question>\u{201D} to send the question straight to Hermes. Keeps the microphone active in the background while the app is running."
+            return String(localized: "Turn on to use the wake word. Say \u{201C}\(phrase)\u{201D} to open the GPT Live voice session hands-free, or \u{201C}\(phrase), <question>\u{201D} to send the question straight to Hermes. Keeps the microphone active in the background while the app is running.")
         }
         let wakeWordService = AppContainer.sharedDefault().wakeWordService
         if let error = wakeWordService.lastError, wakeWordService.phase == .off {
-            return "Listener error: \(error). Turn the toggle off and on to retry."
+            return String(format: String(localized: "Listener error: %@. Turn the toggle off and on to retry."), error)
         }
         if wakeWordService.isSuspendedForExternalCapture {
-            return "Paused while another voice capture is active. It resumes automatically when the other capture ends."
+            return String(localized: "Paused while another voice capture is active. It resumes automatically when the other capture ends.")
         }
         switch wakeWordService.phase {
         case .off:
-            return "Starting the listener\u{2026}"
+            return String(localized: "Starting the listener…")
         case .listening:
-            return "Listening for \u{201C}\(phrase)\u{201D}."
+            return String(localized: "Listening for \u{201C}\(phrase)\u{201D}.")
         case .capturing:
-            return "Recording your command\u{2026}"
+            return String(localized: "Recording your command…")
         case .thinking:
-            return "Waiting for Hermes\u{2026}"
+            return String(localized: "Waiting for Hermes…")
         case .speaking:
-            return "Speaking the reply\u{2026}"
+            return String(localized: "Speaking the reply…")
         }
     }
 
@@ -593,17 +593,17 @@ struct SettingsScreen: View {
         if settingsStore.settings.locationSyncPreference == .backgroundAllowed {
             switch permissionsStore.locationAuthorizationLevel {
             case .always:
-                return "Hermes receives location updates in the background without the blue indicator."
+                return String(localized: "Hermes receives location updates in the background without the blue indicator.")
             case .whenInUse:
-                return "Hermes receives background location updates. A blue indicator appears at the top of the screen when active."
+                return String(localized: "Hermes receives background location updates. A blue indicator appears at the top of the screen when active.")
             case .notDetermined:
-                return "Enabling this will request location access so Hermes can sync while backgrounded."
+                return String(localized: "Enabling this will request location access so Hermes can sync while backgrounded.")
             case .denied, .restricted:
-                return "Location is blocked at the system level. Open Settings to allow Hermes to request background updates."
+                return String(localized: "Location is blocked at the system level. Open Settings to allow Hermes to request background updates.")
             }
         }
 
-        return "Foreground-only keeps location updates limited to active app use."
+        return String(localized: "Foreground-only keeps location updates limited to active app use.")
     }
 
     private var relayModeBinding: Binding<RelayMode> {
@@ -635,7 +635,7 @@ struct SettingsScreen: View {
             .overlay(Design.Colors.divider)
     }
 
-    private func settingsRow(icon: String, iconColor: Color, title: String, value: String?) -> some View {
+    private func settingsRow(icon: String, iconColor: Color, title: LocalizedStringKey, value: String?) -> some View {
         HStack(spacing: Design.Spacing.sm) {
             Image(systemName: icon)
                 .font(.system(size: 14))
@@ -661,7 +661,7 @@ struct SettingsScreen: View {
     private func settingsNavRow(
         icon: String,
         iconColor: Color,
-        title: String,
+        title: LocalizedStringKey,
         value: String? = nil,
         accessibilityIdentifier: String? = nil,
         action: @escaping () -> Void
@@ -702,7 +702,7 @@ struct SettingsScreen: View {
     private func settingsToggle(
         icon: String,
         iconColor: Color,
-        title: String,
+        title: LocalizedStringKey,
         isOn: Binding<Bool>
     ) -> some View {
         Toggle(isOn: isOn) {

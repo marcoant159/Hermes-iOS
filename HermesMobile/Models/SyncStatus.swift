@@ -8,10 +8,10 @@ enum SyncStatus: String, Codable, Hashable, Sendable {
 
     var displayLabel: String {
         switch self {
-        case .synced: "Synced"
-        case .syncing: "Syncing"
-        case .offline: "Offline"
-        case .error: "Sync Error"
+        case .synced: String(localized: "Synced")
+        case .syncing: String(localized: "Syncing")
+        case .offline: String(localized: "Offline")
+        case .error: String(localized: "Sync Error")
         }
     }
 

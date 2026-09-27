@@ -12,14 +12,14 @@ enum PermissionStatus: String, Codable, Hashable, Sendable {
 
     var displayLabel: String {
         switch self {
-        case .notDetermined: "Not Set"
-        case .authorized: "Enabled"
-        case .authorizedWhenInUse: "While Using"
-        case .authorizedAlways: "Always"
-        case .limited: "Limited"
-        case .denied: "Denied"
-        case .restricted: "Restricted"
-        case .unsupported: "Unavailable"
+        case .notDetermined: String(localized: "Not Set")
+        case .authorized: String(localized: "Enabled")
+        case .authorizedWhenInUse: String(localized: "While Using")
+        case .authorizedAlways: String(localized: "Always")
+        case .limited: String(localized: "Limited")
+        case .denied: String(localized: "Denied")
+        case .restricted: String(localized: "Restricted")
+        case .unsupported: String(localized: "Unavailable")
         }
     }
 
@@ -36,10 +36,10 @@ enum PermissionStatus: String, Codable, Hashable, Sendable {
 
     var actionLabel: String? {
         switch self {
-        case .notDetermined: "Enable"
+        case .notDetermined: String(localized: "Enable")
         case .authorized, .authorizedWhenInUse, .authorizedAlways: nil
-        case .limited: "Manage"
-        case .denied: "Open Settings"
+        case .limited: String(localized: "Manage")
+        case .denied: String(localized: "Open Settings")
         case .restricted: nil
         case .unsupported: nil
         }
@@ -55,11 +55,11 @@ enum LocationAuthorizationLevel: String, Codable, Hashable, Sendable {
 
     var displayLabel: String {
         switch self {
-        case .notDetermined: "Not Set"
-        case .denied: "Denied"
-        case .restricted: "Restricted"
-        case .whenInUse: "While Using"
-        case .always: "Always"
+        case .notDetermined: String(localized: "Not Set")
+        case .denied: String(localized: "Denied")
+        case .restricted: String(localized: "Restricted")
+        case .whenInUse: String(localized: "While Using")
+        case .always: String(localized: "Always")
         }
     }
 }
@@ -71,9 +71,9 @@ enum LocationAccuracyLevel: String, Codable, Hashable, Sendable {
 
     var displayLabel: String {
         switch self {
-        case .unknown: "Unknown Accuracy"
-        case .full: "Full Accuracy"
-        case .reduced: "Reduced Accuracy"
+        case .unknown: String(localized: "Unknown Accuracy")
+        case .full: String(localized: "Full Accuracy")
+        case .reduced: String(localized: "Reduced Accuracy")
         }
     }
 }
