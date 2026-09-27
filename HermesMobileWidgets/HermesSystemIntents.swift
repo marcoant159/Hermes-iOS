@@ -10,8 +10,8 @@ import Foundation
 // launched and its own copy runs — so these bodies intentionally do nothing.
 
 struct EndVoiceSessionIntent: LiveActivityIntent {
-    static var title: LocalizedStringResource = "Encerrar conversa por voz"
-    static var description = IntentDescription("Encerra a sessão de voz ativa do Hermes.")
+    static let title: LocalizedStringResource = "Encerrar conversa por voz"
+    static let description = IntentDescription("Encerra a sessão de voz ativa do Hermes.")
 
     func perform() async throws -> some IntentResult {
         return .result()
@@ -19,8 +19,8 @@ struct EndVoiceSessionIntent: LiveActivityIntent {
 }
 
 struct ToggleVoiceMuteIntent: LiveActivityIntent {
-    static var title: LocalizedStringResource = "Silenciar ou retomar o microfone"
-    static var description = IntentDescription("Alterna o microfone da sessão de voz do Hermes.")
+    static let title: LocalizedStringResource = "Silenciar ou retomar o microfone"
+    static let description = IntentDescription("Alterna o microfone da sessão de voz do Hermes.")
 
     func perform() async throws -> some IntentResult {
         return .result()
@@ -28,8 +28,8 @@ struct ToggleVoiceMuteIntent: LiveActivityIntent {
 }
 
 struct TalkWithHermesIntent: AppIntent {
-    static var title: LocalizedStringResource = "Conversar com o Hermes"
-    static var description = IntentDescription("Abre o Hermes e inicia uma conversa por voz com o GPT Live.")
+    static let title: LocalizedStringResource = "Conversar com o Hermes"
+    static let description = IntentDescription("Abre o Hermes e inicia uma conversa por voz com o GPT Live.")
     static var openAppWhenRun: Bool { true }
 
     func perform() async throws -> some IntentResult {
