@@ -78,6 +78,11 @@ targets:
         NSSpeechRecognitionUsageDescription: "Hermes uses speech recognition for voice commands and local transcription."
         NSSupportsLiveActivities: true
         NSSupportsLiveActivitiesFrequentUpdates: true
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: br.com.marcoant.hermes
+            CFBundleURLSchemes:
+              - hermes
         UIBackgroundModes:
           - processing
           - location

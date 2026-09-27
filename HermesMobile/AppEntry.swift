@@ -103,8 +103,8 @@ struct HermesMobileApp: App {
             container.router.popToRoot()
             container.router.selectedTab = .chat
             container.router.navigate(to: .permissions)
-        case "voice":
-            container.router.isVoiceOverlayPresented = true
+        case "voice", "talk":
+            container.startVoiceConversationFromSystem()
         default:
             break
         }

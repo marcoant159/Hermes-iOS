@@ -7,5 +7,6 @@ struct HermesWidgetBundle: WidgetBundle {
         HermesLiveActivity()
         HermesStatusWidget()
         HermesHealthWidget()
+        HermesTalkControlWidget()
     }
 }

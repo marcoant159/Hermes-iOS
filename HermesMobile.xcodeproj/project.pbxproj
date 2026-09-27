@@ -104,6 +104,9 @@
 		9FEE3209117EA59B1422B99B /* HermesLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD51D8251EE8BD9F66B64D2F /* HermesLiveActivity.swift */; };
 		A0580A5DDE956E58669DAE6E /* WebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = A81D1840456136290E452975 /* WebRTC */; };
 		A5A13469D1032CCB24C6D9A5 /* HermesActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ACC623FAF147465BB777E42 /* HermesActivityAttributes.swift */; };
+		B1C2D3E4F5A60718293041A1 /* HermesSystemIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A60718293041A2 /* HermesSystemIntents.swift */; };
+		B1C2D3E4F5A60718293042B1 /* HermesSystemIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A60718293042B2 /* HermesSystemIntents.swift */; };
+		B1C2D3E4F5A60718293043C1 /* HermesTalkControlWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A60718293043C2 /* HermesTalkControlWidget.swift */; };
 		A5A396EDE71010521DDB83DC /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41F982E7FF317AD2BDA8879C /* SettingsStore.swift */; };
 		A5C1CBE7C0C19B80EC44830A /* TalkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A16440BD7ECCFF064BD6232 /* TalkStore.swift */; };
 		A6051FFCA60EC1F263EF9FA8 /* MockHermesHostService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ABD6B7D4D5606CBC4DF62B6 /* MockHermesHostService.swift */; };
@@ -235,6 +238,9 @@
 		354134DC5125C4CA0FEC05A6 /* MockVoiceSessionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockVoiceSessionService.swift; sourceTree = "<group>"; };
 		36500DDDD7B917A3A3C1A3FC /* InboxStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxStore.swift; sourceTree = "<group>"; };
 		3ACC623FAF147465BB777E42 /* HermesActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesActivityAttributes.swift; sourceTree = "<group>"; };
+		B1C2D3E4F5A60718293041A2 /* HermesSystemIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesSystemIntents.swift; sourceTree = "<group>"; };
+		B1C2D3E4F5A60718293042B2 /* HermesSystemIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesSystemIntents.swift; sourceTree = "<group>"; };
+		B1C2D3E4F5A60718293043C2 /* HermesTalkControlWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesTalkControlWidget.swift; sourceTree = "<group>"; };
 		3B0D65894E05A8CB60246986 /* InboxServiceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxServiceProtocol.swift; sourceTree = "<group>"; };
 		3C0CE3739DE97A0EED8BF86C /* VoiceOrb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOrb.swift; sourceTree = "<group>"; };
 		3C463C979C92A1860682D8C2 /* PermissionsOnboardingScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsOnboardingScreen.swift; sourceTree = "<group>"; };
@@ -433,11 +439,20 @@
 				11C92F959C91E3D92A137F61 /* Resources */,
 				935A329D7833E4DC9AFD0FD4 /* Services */,
 				1BE66C0CA0A4C82A44FDF7E9 /* Stores */,
+				B1C2D3E4F5A60718293044D1 /* System */,
 				E0F3E6FB4FF8FE4136F81A16 /* AppEntry.swift */,
 				CAAF4F2F210B5160B5268CF6 /* ContentView.swift */,
 				89947254B6F4166F9BFD21E2 /* HermesMobile.entitlements */,
 			);
 			path = HermesMobile;
+			sourceTree = "<group>";
+		};
+		B1C2D3E4F5A60718293044D1 /* System */ = {
+			isa = PBXGroup;
+			children = (
+				B1C2D3E4F5A60718293041A2 /* HermesSystemIntents.swift */,
+			);
+			path = System;
 			sourceTree = "<group>";
 		};
 		2F7803CC2C39D6DE07427694 /* Inbox */ = {
@@ -647,6 +662,8 @@
 				3ACC623FAF147465BB777E42 /* HermesActivityAttributes.swift */,
 				F6071829304152637485961A /* HermesHealthWidget.swift */,
 				DD51D8251EE8BD9F66B64D2F /* HermesLiveActivity.swift */,
+				B1C2D3E4F5A60718293042B2 /* HermesSystemIntents.swift */,
+				B1C2D3E4F5A60718293043C2 /* HermesTalkControlWidget.swift */,
 				29304152637485961A2B3C4D /* HermesMobileWidgets.entitlements */,
 				E5F607182930415263748516 /* HermesStatusWidget.swift */,
 				071829304152637485961A2B /* HermesTimelineProvider.swift */,
@@ -894,6 +911,8 @@
 				9A071829304152A1B2C3D4E5 /* HermesTimelineProvider.swift in Sources */,
 				9E292D04C207E3FF0AA3E16A /* HermesWidgetBundle.swift in Sources */,
 				AB182930415263A1B2C3D4E5 /* HermesWidgetData.swift in Sources */,
+				B1C2D3E4F5A60718293042B1 /* HermesSystemIntents.swift in Sources */,
+				B1C2D3E4F5A60718293043C1 /* HermesTalkControlWidget.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -951,6 +970,7 @@
 				FBEB6A5AF7C3BE8EAD329817 /* HapticEngine.swift in Sources */,
 				3FD762BB48352F4B7832682D /* HealthServiceProtocol.swift in Sources */,
 				F82EC87195EF3AC1E7A40228 /* HermesActivityAttributes.swift in Sources */,
+				B1C2D3E4F5A60718293041A1 /* HermesSystemIntents.swift in Sources */,
 				77CE628ECAFBA5D97367DE4F /* HermesAvatar.swift in Sources */,
 				045CBCF8ADA710846AF339B8 /* HermesClientProtocol.swift in Sources */,
 				24ADF49D0A89908EA74858B1 /* HermesHostServiceProtocol.swift in Sources */,

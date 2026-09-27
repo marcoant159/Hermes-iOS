@@ -32,6 +32,11 @@ final class ChatStore {
     private let chatLiveActivity = LiveActivityService()
     let persistence: any AppPersistenceStoreProtocol
 
+    /// `true` while the streaming response is surfaced on the Lock Screen /
+    /// Dynamic Island because the app moved to the background mid-stream.
+    private var backgroundResponseActivityActive = false
+    private var liveActivityPrompt: String?
+
     /// Called when conversation content changes (new message, streaming complete).
     /// Used by AppContainer to push widget data updates.
     var onConversationChanged: (@MainActor () -> Void)?
@@ -93,6 +98,7 @@ final class ChatStore {
         conversation?.messages.append(optimistic)
         conversation?.lastActivity = optimistic.timestamp
         pendingMessageSentAt = optimistic.timestamp
+        liveActivityPrompt = trimmedContent.isEmpty ? nil : trimmedContent
 
         // Append a placeholder Hermes message for streaming content
         let placeholderID = UUID()
@@ -128,6 +134,7 @@ final class ChatStore {
                             conv.messages[idx].toolActivities[i].isActive = false
                         }
                         self.conversation = conv
+                        self.refreshBackgroundResponseActivity()
                     }
 
                 case .toolActivity(let label):
@@ -142,8 +149,8 @@ final class ChatStore {
                         self.conversation = conv
                     }
                     // Show tool progress on Lock Screen / Dynamic Island
-                    self.chatLiveActivity.startToolCall(toolName: label)
-                    self.chatLiveActivity.updateToolProgress(label)
+                    self.chatLiveActivity.startToolCall(toolName: label, prompt: self.liveActivityPrompt)
+                    self.chatLiveActivity.updateToolProgress(label, prompt: self.liveActivityPrompt)
 
                 case .finished(let finalMessage, let usage, let diff):
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
@@ -171,7 +178,12 @@ final class ChatStore {
                     self.detectModelSwitch(from: finalMessage.content)
                     self.streamingMessageID = nil
                     self.pendingMessageSentAt = nil
-                    self.chatLiveActivity.endActivity()
+                    if self.backgroundResponseActivityActive {
+                        self.backgroundResponseActivityActive = false
+                        self.chatLiveActivity.finishChatResponse(answerPreview: finalMessage.content)
+                    } else {
+                        self.chatLiveActivity.endActivity()
+                    }
 
                 case .failed(let errorMessage):
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == placeholderID }) {
@@ -186,6 +198,7 @@ final class ChatStore {
                         }
                     }
                     self.streamingMessageID = nil
+                    self.backgroundResponseActivityActive = false
                     self.chatLiveActivity.endActivity()
                     if let idx = self.conversation?.messages.firstIndex(where: { $0.id == clientMessageID }) {
                         self.conversation?.messages[idx].status = acceptedJobID == nil ? .failed : .sending
@@ -279,6 +292,49 @@ final class ChatStore {
             persistence.saveConversationCache(conversation)
             onConversationChanged?()
         }
+    }
+
+    /// Called when the app moves to the background while a response is still
+    /// streaming, so the Lock Screen / Dynamic Island can show its progress.
+    func beginBackgroundResponseActivityIfNeeded() {
+        guard isStreaming else { return }
+        backgroundResponseActivityActive = true
+        chatLiveActivity.startChatResponse(
+            prompt: lastUserMessageSnippet,
+            answerPreview: currentStreamingSnippet
+        )
+    }
+
+    /// Called when the app returns to the foreground: the in-app chat already
+    /// shows the stream, so retract the background-only activity.
+    func endBackgroundResponseActivityIfNeeded() {
+        guard backgroundResponseActivityActive else { return }
+        backgroundResponseActivityActive = false
+        chatLiveActivity.endCurrentChatActivity()
+    }
+
+    private func refreshBackgroundResponseActivity() {
+        guard backgroundResponseActivityActive else { return }
+        chatLiveActivity.updateChatResponse(
+            status: "Hermes está respondendo…",
+            prompt: lastUserMessageSnippet,
+            answerPreview: currentStreamingSnippet,
+            progress: nil
+        )
+    }
+
+    private var lastUserMessageSnippet: String? {
+        guard let text = conversation?.messages
+            .last(where: { $0.sender == .user && !$0.content.isEmpty })?.content else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : String(trimmed.prefix(140))
+    }
+
+    private var currentStreamingSnippet: String? {
+        guard let sid = streamingMessageID,
+              let text = conversation?.messages.first(where: { $0.id == sid })?.content else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : String(trimmed.suffix(180))
     }
 
     func injectVoiceTranscript(voiceSessionId: UUID, duration: TimeInterval) async {
