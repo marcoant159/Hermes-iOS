@@ -1,5 +1,13 @@
 # REPORT — carplay (branch `wip/carplay`)
 
+> **STATUS (29/09/2026):** a Apple **aprovou** a entitlement CarPlay
+> `com.apple.developer.carplay-voice-based-conversation`. Nesta branch ela **já está ligada
+> ao target** e validada no CI (`Build unsigned IPA` e `Simulator screenshots` verdes; veja
+> “Ativação pós-aprovação (29/09)” no fim). **Ainda depende do Marco:** marcar a capability
+> CarPlay no App ID `br.com.marcoant.hermes` no portal (a API não permite) — sem isso o
+> TestFlight falha na assinatura. Depois disso, o orquestrador mergeia em `feat/own-identity`
+> e dispara o TestFlight (build_number ≥ 9). O roteiro de teste no carro está no fim.
+
 Objetivo: ligar o CarPlay (categoria "voice-based conversational apps", iOS 26.4+) sem
 quebrar a assinatura do TestFlight enquanto a entitlement não é aprovada pela Apple;
 deixar o entitlement pronto, o pedido à Apple escrito e o fluxo de voz revisado.
@@ -300,5 +308,55 @@ arquivo existir no master).
   pareamento, **sem** a tela de CarPlay. Como previsto, esse passo não é confiável no CI.
 - **Conclusão**: a entitlement está corretamente ligada e embutida no build de Simulator.
   Exercitar a cena de CarPlay de verdade fica para o carro (ou Simulator local do Marco).
+
+#### Validação obrigatória com a entitlement ligada (wip/carplay)
+
+- `Build unsigned IPA` — run **36509708119**, **verde** (3m10s). Compila o app (Release,
+  iphoneos) com o `CODE_SIGN_ENTITLEMENTS` novo, sem assinatura; sem erro de compilação.
+- `Simulator screenshots` — run **36509963116**, **verde** (8m40s). `Test Suite
+  'ScreenshotTourUITests' passed`, `Executed 1 test, with 0 failures`, 13 PNGs + `tour.mp4`.
+  Confirma que ligar a entitlement **não** regrediu o app no iPhone.
+- `CarPlay simulator` — run **36508901047** (2ª), **verde**; ver acima.
+
+### Roteiro de teste no carro (Marco) — revisado
+
+**Depende do Marco (passo manual no portal):** marcar a capability CarPlay (voice-based
+conversation) no App ID `br.com.marcoant.hermes` (ver topo desta seção). Sem isso, o build de
+TestFlight falha ao assinar. Depois, o orquestrador faz o merge em `feat/own-identity` e
+dispara o TestFlight com `build_number ≥ 9` — **o CarPlay só vai no ar a partir desse build**.
+
+Com o build do TestFlight instalado e o celular pareado com o Hermes:
+
+1. Conectar o iPhone ao carro por CarPlay (USB ou sem fio). O ícone do **Hermes** deve
+   aparecer na tela inicial do carro.
+2. Abrir o Hermes no carro: deve mostrar **“Pronto. Toque para conversar com o Hermes”** com
+   o botão **Iniciar conversa**.
+3. Tocar **Iniciar conversa** → **“Ouvindo…”**. Falar, ex.: “Como estão os reservatórios da
+   fazenda?” → **“Pensando…”** → **“Consultando o Hermes…”** → **“Falando…”**; a resposta sai
+   em áudio pelo carro.
+4. Tocar **Encerrar** → volta para **“Pronto”**.
+5. Com a conversa em andamento, **bloquear a tela do iPhone**: o áudio deve continuar pelo
+   carro (modo background `audio`).
+6. **Desconectar** o carro com a sessão aberta: a sessão encerra com segurança; reconectar e
+   repetir.
+7. Iniciar uma sessão de voz **no iPhone** e só então conectar o carro; ao desconectar, a
+   sessão do iPhone deve continuar (o CarPlay só encerra o que ele mesmo abriu).
+8. **Wake word x CarPlay:** com a wake word ligada, abrir o Hermes no carro. Em Ajustes →
+   Mãos livres, o status deve dizer **“Pausada enquanto conectado ao CarPlay”**, e dizer
+   “oi hermes” **não** deve abrir sessão (nem no carro, nem no iPhone). Desconectar: o status
+   volta e “oi hermes” funciona de novo.
+9. Com o carro conectado, disparar a Siri/Atalho “Conversar com o Hermes” ou o Toque
+   Traseiro: o overlay abre **no iPhone**; a tela do carro **não** deve começar a conversar.
+10. Se algo falhar, anotar a mensagem exata e o estado (conectado/desconectado, com/sem
+    sessão, tela bloqueada) para o relatório.
+
+### Pendências (pós-29/09)
+
+- **Marco**: marcar a capability no App ID (portal). Depois o orquestrador mergeia em
+  `feat/own-identity` e dispara o TestFlight (build ≥ 9) — não disparo o TestFlight.
+- Registrar `ios-carplay-simulator.yml` no master (fica só `workflow_dispatch`); o gatilho
+  temporário `push` já foi removido.
+- Testar no carro de verdade (roteiro acima) — a cena não roda no CI.
+- Textos pt-BR literal; internacionalizar depois, se quiser.
 
 
