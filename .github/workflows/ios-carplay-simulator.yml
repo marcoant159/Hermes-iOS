@@ -1,11 +1,10 @@
 name: CarPlay simulator
 
-# Experimental — exercita a cena de CarPlay no Simulator SEM a entitlement da
-# Apple. O app é compilado para o Simulator com o arquivo
-# `HermesMobile/HermesMobile-CarPlay.entitlements` (override só de
-# `CODE_SIGN_ENTITLEMENTS`) e assinado em modo ad-hoc, que aceita entitlements
-# locais. O workflow confirma a entitlement embutida no binário e instala/lança
-# o app no mock.
+# Experimental — exercita a cena de CarPlay no Simulator. O target do app já
+# aponta `CODE_SIGN_ENTITLEMENTS` para `HermesMobile/HermesMobile-CarPlay.entitlements`
+# no projeto; o build é ad-hoc (sem equipe/perfil) e o Xcode embute as
+# entitlements simuladas na seção __TEXT,__entitlements do executável, que é o que
+# este workflow confere. Depois instala/lança o app no mock.
 #
 # Limitação conhecida: NÃO existe subcomando do `xcrun simctl` para abrir a tela
 # de CarPlay; ela é habilitada pela GUI do Simulator (I/O > External Displays >
@@ -64,7 +63,6 @@ jobs:
             -sdk iphonesimulator \
             -destination "id=$UDID" \
             -derivedDataPath "$RUNNER_TEMP/dd" \
-            CODE_SIGN_ENTITLEMENTS=HermesMobile/HermesMobile-CarPlay.entitlements \
             CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= CODE_SIGN_IDENTITY=- PROVISIONING_PROFILE_SPECIFIER= \
             > "$RUNNER_TEMP/build.log" 2>&1 || {
               grep -nE "error:|error " "$RUNNER_TEMP/build.log" | head -60 || true
@@ -73,13 +71,25 @@ jobs:
             }
           tail -n 10 "$RUNNER_TEMP/build.log"
 
-      - name: Confirmar a entitlement embutida pela assinatura ad-hoc
+      - name: Confirmar a entitlement embutida no binário
         run: |
           set -euo pipefail
           APP=$(find "$RUNNER_TEMP/dd/Build/Products" -maxdepth 2 -name "HermesMobile.app" -type d | head -1)
+          EXE="$APP/HermesMobile"
           echo "app: $APP"
-          codesign -d --entitlements :- "$APP" | tee "$RUNNER_TEMP/entitlements.plist"
-          grep -q "carplay-voice-based-conversation" "$RUNNER_TEMP/entitlements.plist"
+          # Sem perfil de provisionamento (Simulator, assinatura ad-hoc) o xcent
+          # "real" fica vazio. Porém o Xcode embute as entitlements simuladas na
+          # seção __TEXT,__entitlements do executável. Confere-se por ali.
+          echo "== codesign (pode vir vazio sem perfil) =="
+          codesign -d --entitlements :- "$APP" | tee "$RUNNER_TEMP/entitlements.plist" || true
+          echo "== seção __TEXT,__entitlements =="
+          if grep -a "com.apple.developer.carplay-voice-based-conversation" "$EXE"; then
+            echo "entitlement de CarPlay embutida no executável: OK"
+          else
+            echo "chave não encontrada no executável; dump da seção:"
+            otool -s __TEXT __entitlements "$EXE" | head -20 || true
+            exit 1
+          fi
 
       - name: Instalar e lançar (modo mock)
         env:

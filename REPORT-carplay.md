@@ -266,4 +266,21 @@ arquivo existir no master).
   `HermesMobile.entitlements` atual (app-groups, healthkit, healthkit.access,
   healthkit.background-delivery) **+** a chave do CarPlay. Está em sincronia.
 
+#### Run 36508448459 (1ª tentativa, gatilho push)
+
+- `Build para o Simulator com entitlement de CarPlay (ad-hoc)` **verde**: o entitlement
+  `HermesMobile-CarPlay.entitlements` foi processado pelo Xcode (`ProcessProductPackaging`)
+  e as entitlements **simuladas** (`HermesMobile.app-Simulated.xcent`) saem com a chave
+  `com.apple.developer.carplay-voice-based-conversation = 1` (e healthkit/app-groups).
+- `Confirmar a entitlement embutida pela assinatura ad-hoc` **falhou**: sem perfil
+  (Simulator/ad-hoc), o xcent “real” (`HermesMobile.app.xcent`) fica **vazio** porque não há
+  provisionamento para autorizar; por isso `codesign -d --entitlements :-` no `.app` devolve
+  `<dict></dict>`. As entitlements efetivas vão na seção `__TEXT,__entitlements` do
+  executável (linker `-sectcreate`), não no blob da assinatura. **Falso negativo do check**,
+  não do build.
+- Correção no workflow: o check passou a procurar a chave na própria seção embutida
+  (`grep -a` no executável, com `codesign` apenas informativo) e o override redundante de
+  `CODE_SIGN_ENTITLEMENTS` na linha do `xcodebuild` foi removido (ele se aplicava também ao
+  widget; o `.pbxproj` já aponta o arquivo certo por target). Re-run abaixo.
+
 
