@@ -283,4 +283,22 @@ arquivo existir no master).
   `CODE_SIGN_ENTITLEMENTS` na linha do `xcodebuild` foi removido (ele se aplicava também ao
   widget; o `.pbxproj` já aponta o arquivo certo por target). Re-run abaixo.
 
+#### Run 36508901047 (2ª tentativa, verificada) — VERDE
+
+- `Confirmar a entitlement embutida no binário` **verde**. O `codesign` no `.app` continua
+  saindo `<dict></dict>` (sem perfil, esperado), mas a seção `__TEXT,__entitlements` do
+  executável contém a chave (e o blob DER com `application-identifier = FAKETEAMID...`):
+  ```
+  <key>com.apple.developer.carplay-voice-based-conversation</key>
+  entitlement de CarPlay embutida no executável: OK
+  ```
+- `Instalar e lançar (modo mock)` **verde**: `simctl install` + `launch` (pid 7146).
+- `Abrir a tela de CarPlay` **best-effort não abriu**: o AppleScript falhou com
+  `System Events ... Can't get menu item "CarPlay" ... (-1728)` — o Simulator do runner não
+  expõe o item de menu `I/O → External Displays → CarPlay` (e não há `simctl` para isso).
+  O screenshot capturado (`simulator-screen.png`) mostra apenas o iPhone na tela de
+  pareamento, **sem** a tela de CarPlay. Como previsto, esse passo não é confiável no CI.
+- **Conclusão**: a entitlement está corretamente ligada e embutida no build de Simulator.
+  Exercitar a cena de CarPlay de verdade fica para o carro (ou Simulator local do Marco).
+
 
