@@ -19,6 +19,8 @@ name: CarPlay simulator
 
 on:
   workflow_dispatch:
+  push:
+    branches: [wip/carplay]
 
 jobs:
   carplay-simulator:

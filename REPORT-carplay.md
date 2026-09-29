@@ -223,3 +223,47 @@ Isso já era verdade pelo desenho; confirmado no código:
    `defaults write com.apple.iphonesimulator CarPlay -bool YES`). O ícone do Hermes deve
    aparecer e a tela de voz deve abrir.
 
+## Ativação pós-aprovação (29/09)
+
+A Apple **aprovou em 29/09/2026** a entitlement `com.apple.developer.carplay-voice-based-conversation`
+para a conta do Marco (Team `MXZ42GRXC6`). Esta seção liga a entitlement no projeto e
+revalida no CI, mantendo o TestFlight (disparo) para o orquestrador.
+
+### PASSO MANUAL PENDENTE DO MARCO (fazer antes de gerar o TestFlight)
+
+Estado do App ID (verificado pelo orquestrador em 29/09, `GET /v1/bundleIds/H33W92HAS9/bundleIdCapabilities`):
+a API retornou **apenas** `IN_APP_PURCHASE`, `PUSH_NOTIFICATIONS`, `APP_GROUPS`, `HEALTHKIT`.
+A capability de CarPlay **NÃO** está no App ID `br.com.marcoant.hermes`, e a API pública do ASC
+**não** expõe `CapabilityType` para capabilities gerenciadas/concedidas por pedido. Ou seja:
+a concessão da Apple fica no portal, mas o App ID ainda precisa ser marcado à mão.
+
+1. developer.apple.com → Certificates, IDs & Profiles → Identifiers → `br.com.marcoant.hermes`
+   → aba **Additional Capabilities** → marcar **CarPlay (voice-based conversation)** → **Save**.
+2. Sem esse passo o perfil não contém a entitlement e o **TestFlight falha na assinatura**.
+   (O Xcode/workflow pode regenerar o perfil com `-allowProvisioningUpdates`, mas só depois
+   que o App ID tiver a capability marcada.)
+
+### Tentativa de rodar o workflow do Simulator de CarPlay
+
+O `ios-carplay-simulator.yml` só tinha `workflow_dispatch`, que **não** aparece para workflows
+ausentes do branch default (master) — por isso não pôde ser disparado antes. Como não é
+permitido dar push no master, adicionei temporariamente um gatilho `push: branches: [wip/carplay]`
+ao arquivo. Diferente do `workflow_dispatch`, o gatilho `push` usa a versão do workflow que
+está **na própria branch** empurrada, então funciona na `wip/carplay`. Depois de rodar uma vez,
+o gatilho `push` será removido num commit separado (fica só `workflow_dispatch` para quando o
+arquivo existir no master).
+
+### Mudanças no projeto (entitlement ligada)
+
+- `HermesMobile.xcodeproj/project.pbxproj`: as duas configs do **target do app**
+  (Debug `B66B3E358307E760AB86E9DC` e Release `F2A197B631122A07E5B48F5B`) passaram de
+  `CODE_SIGN_ENTITLEMENTS = HermesMobile/HermesMobile.entitlements;` para
+  `HermesMobile/HermesMobile-CarPlay.entitlements;`. O widget **não** foi tocado.
+- `project.yml`: `targets.HermesMobile.entitlements.path` aponta para o mesmo arquivo e a
+  chave `com.apple.developer.carplay-voice-based-conversation: true` foi adicionada às
+  `properties` (assim uma eventual regeneração com xcodegen não perde a chave).
+- `HermesMobile/HermesMobile-CarPlay.entitlements` conferido: **idêntico** ao
+  `HermesMobile.entitlements` atual (app-groups, healthkit, healthkit.access,
+  healthkit.background-delivery) **+** a chave do CarPlay. Está em sincronia.
+
+
